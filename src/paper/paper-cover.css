@@ -1,0 +1,9 @@
+/* Original PgCover rules from src/paper/paperGlass.css. */
+.pg-cover { position: relative; display: grid; place-items: center; width: 44px; height: 44px; flex: none; border-radius: 10px; overflow: hidden; color: var(--pg-ink-3);
+  background: linear-gradient(145deg, hsl(var(--ch) 30% 86%), hsl(calc(var(--ch) + 26) 34% 74%)); box-shadow: inset 0 0 0 1px var(--pg-line); }
+.dark .pg-cover { background: linear-gradient(145deg, hsl(var(--ch) 18% 26%), hsl(calc(var(--ch) + 26) 22% 14%)); }
+.pg-cover--fill { width: 100%; height: auto; aspect-ratio: 1; border-radius: 16px; box-shadow: var(--pg-cover-shadow); }
+.pg-cover img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity .4s ease; }
+.pg-cover img.is-loaded { opacity: 1; }
+.pg-cover svg { width: 18px; height: 18px; stroke-width: 1.3; opacity: .7; }
+.pg-cover--fill svg { width: 34px; height: 34px; }

@@ -1,0 +1,620 @@
+/*!
+ReactDrops Component License 1.0
+
+Copyright (c) 2026 ReactDrops
+
+1. Scope and definitions
+
+This license applies to ReactDrops software and associated documentation that
+expressly carry this license or are distributed under a LICENSE file containing
+it (the "Software"). "Licensor" means the copyright holder granting rights in
+the Software, and only to the extent that holder has authority to grant them.
+"You" means the individual or entity exercising these rights.
+
+An "End Product" is a website, application, service, or other finished project
+whose primary purpose is something other than providing reusable components,
+source code, templates, or development assets to others.
+
+2. Permitted uses
+
+Subject to this license, Licensor grants You a worldwide, non-exclusive,
+royalty-free license to use, copy, modify, and incorporate the Software into
+unlimited personal, internal, and commercial End Products. You may charge for
+End Products, subscriptions, development services, and work for clients.
+
+You may distribute the Software as an integrated part of an End Product,
+including in browser-delivered JavaScript. You may provide End Product source
+code to a client, and share the Software with employees and contractors who
+need it to develop or maintain End Products. Those recipients may use the
+Software for those purposes subject to this license. This permission does not
+authorize them to redistribute the Software as a reusable development asset.
+
+3. Restricted redistribution
+
+Unless You obtain separate written permission from Licensor, You may not sell,
+sublicense, publish, share, or otherwise redistribute the Software, or a
+substantial portion of it, whether unchanged or modified:
+
+(a) as a standalone component, component library, UI kit, source-code bundle,
+    registry, or other collection of reusable development assets;
+(b) as part of a theme, template, starter project, or similar product offered
+    to multiple recipients for reuse in their own projects; or
+(c) through a builder or generation service that offers the Software as
+    reusable blocks or source-code exports for others' projects.
+
+These restrictions apply to paid and free redistribution. Renaming, restyling,
+repackaging, translating, or modifying the Software does not remove them.
+Building separate finished websites or applications for multiple clients is
+permitted; offering a reusable template or kit containing the Software is not.
+
+Public source-code hosting by Licensor is not permission to republish the
+Software under another license. This license does not override any separate
+rights granted directly by Licensor or applicable code-hosting terms.
+
+4. Notices and ownership
+
+Retain this license and applicable copyright and third-party notices in source
+copies of the Software and permitted source distributions. No visible credit
+or ReactDrops logo is required in an End Product's user interface.
+
+Licensor retains ownership of its Software. You retain rights in Your own
+contributions, subject to the license for any incorporated Software. No rights
+to trademarks, trade names, or logos are granted by this license.
+
+5. Third-party materials and separate grants
+
+Dependencies, fonts, images, videos, and other third-party materials remain
+subject to their respective licenses. Separately identified third-party code
+is licensed under its stated terms, and these restrictions do not limit rights
+granted by its copyright holders. Retain all required third-party notices.
+Demo media are not licensed by this document; obtain Your own permission or
+replace them with media You are entitled to use.
+
+This license does not revoke rights granted under other valid licenses. It does
+not assert ownership of third-party work or grant rights Licensor lacks.
+
+6. Termination
+
+The permissions granted here continue unless terminated for a material breach.
+If You fail to cure a material breach within 30 days after receiving written
+notice from Licensor, Your permissions terminate. On termination, cease uses
+and distributions requiring this license. Rights under independently granted
+licenses and rights that applicable law does not allow to be restricted remain
+unaffected. Sections 3 through 7 survive termination.
+
+7. Disclaimer
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE, TITLE, AND NON-INFRINGEMENT. TO THE MAXIMUM EXTENT
+PERMITTED BY APPLICABLE LAW, LICENSOR AND CONTRIBUTORS SHALL NOT BE LIABLE FOR
+ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN CONTRACT, TORT, OR OTHERWISE,
+ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR ITS USE.
+
+This license does not limit rights or exceptions that applicable law makes
+non-waivable. No other permissions are granted by implication.
+*/
+
+/* ------------------------------------------------------------- surfaces */
+
+.soap-bubble-surface,
+.soap-bubble-toggle,
+.soap-bubble-slider {
+  --soap-bubble-fallback-palette:
+    linear-gradient(135deg, var(--soap-bubble-soap-highlight-color, transparent), transparent 65%),
+    linear-gradient(0deg, var(--soap-bubble-soap-shade-color, transparent), transparent 65%),
+    var(--soap-bubble-custom-palette, linear-gradient(transparent, transparent)),
+    linear-gradient(
+      var(--soap-bubble-soap-color, transparent),
+      var(--soap-bubble-soap-color, transparent)
+    ),
+    linear-gradient(var(--soap-bubble-tint, transparent), var(--soap-bubble-tint, transparent));
+}
+
+.soap-bubble-surface {
+  --soap-bubble-surface-bleed: max(12px, 1em);
+  position: relative;
+  isolation: isolate;
+  border-radius: var(--soap-bubble-radius, 1.5em);
+  /* A soft shadow that starts below the rim: a dense one hugging the edge
+     reads as a dark outline on light pages. */
+  box-shadow: var(--soap-bubble-shadow, 0 1em 2.25em -0.875em rgb(0 0 0 / 0.14));
+}
+.soap-bubble-surface-canvas,
+.soap-bubble-control-canvas {
+  position: absolute;
+  display: block;
+  pointer-events: none;
+  opacity: 0;
+}
+.soap-bubble-surface-canvas {
+  inset: calc(-1 * var(--soap-bubble-surface-bleed));
+  z-index: -1;
+  width: calc(100% + 2 * var(--soap-bubble-surface-bleed));
+  height: calc(100% + 2 * var(--soap-bubble-surface-bleed));
+}
+.soap-bubble-control-canvas {
+  inset: calc(var(--soap-bubble-control-bleed) * -1);
+  z-index: 0;
+  width: calc(100% + var(--soap-bubble-control-bleed) * 2);
+  height: calc(100% + var(--soap-bubble-control-bleed) * 2);
+}
+[data-soap-bubble-ready] > .soap-bubble-surface-canvas,
+[data-soap-bubble-ready] > .soap-bubble-control-canvas {
+  opacity: 1;
+}
+/* Without WebGL: frosted panels. */
+.soap-bubble-surface:not([data-soap-bubble-ready]) {
+  background: var(--soap-bubble-fallback-palette), rgb(255 255 255 / 0.28);
+  -webkit-backdrop-filter: blur(18px) saturate(1.6);
+  backdrop-filter: blur(18px) saturate(1.6);
+}
+
+.soap-bubble-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5em;
+  min-height: 2.75em;
+  padding: 0 1.25em;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+/* Buttons wobble under the pointer and a CSS shadow cannot follow the film:
+   it would show as a fixed frame around the bubble, so they cast none. */
+.soap-bubble-surface.soap-bubble-button {
+  --soap-bubble-shadow: none;
+}
+.soap-bubble-button:focus-visible,
+.soap-bubble-toggle:focus-visible,
+.soap-bubble-slider:has(.soap-bubble-slider-input:focus-visible) {
+  outline: 2px solid currentColor;
+  outline-offset: 3px;
+}
+/* No ring on the menu, its actions or a field: the shade marks the active
+   action and the caret marks the field. */
+.soap-bubble-menu > .soap-bubble-button:focus-visible,
+.soap-bubble-menu-item:focus-visible,
+.soap-bubble-search-input:focus-visible {
+  outline: none;
+}
+.soap-bubble-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.soap-bubble-toggle {
+  position: relative;
+  isolation: isolate;
+  display: inline-block;
+  flex: none;
+  padding: 0;
+  border: 0;
+  border-radius: 9999px;
+  background: transparent;
+  vertical-align: middle;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+/* The pill keeps its bubble material at rest and swells over the track
+   while pressed or moving. White fill is only the no-WebGL fallback. */
+.soap-bubble-toggle-thumb {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  z-index: 1;
+  width: var(--soap-bubble-thumb-width);
+  height: var(--soap-bubble-thumb-height);
+  border-radius: 9999px;
+  box-shadow:
+    0 0.1875em 0.5em rgb(0 0 0 / 0.16),
+    0 0.0625em 0.0625em rgb(0 0 0 / 0.06);
+  transition:
+    width 0.14s cubic-bezier(0.2, 0.8, 0.3, 1),
+    height 0.14s cubic-bezier(0.2, 0.8, 0.3, 1),
+    box-shadow 0.25s;
+  pointer-events: none;
+}
+.soap-bubble-toggle:not([data-soap-bubble-ready]) > .soap-bubble-toggle-thumb::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--soap-bubble-fallback-palette), #fff;
+}
+.soap-bubble-toggle[data-soap-bubble-ready] > .soap-bubble-toggle-thumb {
+  box-shadow: none;
+}
+.soap-bubble-toggle[data-soap-bubble-ready][data-lens] > .soap-bubble-toggle-thumb {
+  width: calc(var(--soap-bubble-thumb-width) * 1.55);
+  height: calc(var(--soap-bubble-thumb-height) * 1.6);
+  transition-duration: 0.14s, 0.14s, 0.25s;
+  transition-timing-function: cubic-bezier(0.3, 1.5, 0.5, 1);
+}
+.soap-bubble-toggle:not([data-soap-bubble-ready]) {
+  background: rgb(120 120 128 / 0.22);
+}
+.soap-bubble-toggle:not([data-soap-bubble-ready])[aria-checked='true'] {
+  background: var(--soap-bubble-toggle-color);
+}
+.soap-bubble-toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.soap-bubble-slider {
+  position: relative;
+  isolation: isolate;
+  display: block;
+  width: 100%;
+  min-width: 0;
+  touch-action: pan-y;
+}
+.soap-bubble-slider-track-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: var(--soap-slider-track-height, 3.5px);
+  transform: translateY(-50%);
+  border-radius: 999px;
+  background: linear-gradient(
+    to right,
+    var(--soap-slider-fill-color, var(--range-fill)) var(--soap-slider-fill-pct, 0%),
+    var(--soap-slider-track-color, var(--range-track)) var(--soap-slider-fill-pct, 0%)
+  );
+  pointer-events: none;
+  transition: opacity 0.14s ease, background 0.3s ease;
+}
+.soap-bubble-slider[data-soap-bubble-ready]:not([data-hover-only-bubble]) > .soap-bubble-slider-track-line {
+  opacity: 0;
+}
+.soap-bubble-slider[data-hover-only-bubble] > .soap-bubble-control-canvas {
+  opacity: 0 !important;
+  transition: opacity 0.16s ease;
+}
+.soap-bubble-slider[data-hover-only-bubble][data-soap-bubble-ready][data-bubble-visible] > .soap-bubble-control-canvas {
+  opacity: 1 !important;
+}
+.soap-bubble-slider[data-hover-only-bubble][data-soap-bubble-ready][data-bubble-visible] > .soap-bubble-slider-track-line {
+  opacity: 0;
+}
+.soap-bubble-slider[data-hover-only-bubble]:not([data-bubble-visible]) .soap-bubble-slider-thumb {
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.45);
+}
+.soap-bubble-slider-thumb {
+  position: absolute;
+  top: 50%;
+  z-index: 1;
+  width: var(--soap-bubble-thumb-width);
+  height: var(--soap-bubble-thumb-height);
+  border-radius: 9999px;
+  transform: translate(-50%, -50%);
+  transition:
+    width 0.28s cubic-bezier(0.3, 1.5, 0.5, 1),
+    height 0.28s cubic-bezier(0.3, 1.5, 0.5, 1),
+    transform 0.22s cubic-bezier(0.22, 1.35, 0.36, 1),
+    opacity 0.16s ease;
+  pointer-events: none;
+}
+.soap-bubble-slider[data-active] .soap-bubble-slider-thumb {
+  width: calc(var(--soap-bubble-thumb-width) * 1.45);
+  height: calc(var(--soap-bubble-thumb-height) * 1.45);
+}
+.soap-bubble-slider:not([data-soap-bubble-ready]) .soap-bubble-slider-thumb {
+  background: var(--soap-bubble-fallback-palette), #fff;
+  box-shadow: 0 0.375em 0.875em -0.375em rgb(0 0 0 / 0.35);
+}
+.soap-bubble-slider-input {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.soap-bubble-slider-input:disabled {
+  cursor: default;
+}
+.soap-bubble-slider-input::-webkit-slider-thumb {
+  width: var(--soap-bubble-thumb-width);
+  height: var(--soap-bubble-thumb-height);
+  -webkit-appearance: none;
+  appearance: none;
+}
+.soap-bubble-slider-input::-moz-range-thumb {
+  width: var(--soap-bubble-thumb-width);
+  height: var(--soap-bubble-thumb-height);
+  border: 0;
+}
+.soap-bubble-slider[data-disabled] {
+  opacity: 0.55;
+}
+
+.soap-bubble-icon-button.soap-bubble-button {
+  width: 2.75em;
+  height: 2.75em;
+  padding: 0;
+  font-weight: 400;
+}
+.soap-bubble-icon-button svg {
+  width: 1.25em;
+  height: 1.25em;
+}
+/* The film swells without enlarging the glyph or changing the hit target. */
+.soap-bubble-button-content {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: inherit;
+  pointer-events: none;
+  opacity: calc(1 - 0.68 * clamp(0, var(--soap-bubble-press, 0), 1));
+}
+
+.soap-bubble-search {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  height: 2.52em;
+  /* The magnifier sits at the centre of the pill's round end, in line with
+     the round buttons above it. */
+  padding: 0 0.78em 0 0.85em;
+}
+/* Fields and menus sit flat on the page, without a shadow in either theme. */
+.soap-bubble-surface.soap-bubble-search,
+.soap-bubble-surface.soap-bubble-menu-panel {
+  --soap-bubble-shadow: none;
+}
+.soap-bubble-search-icon {
+  flex: none;
+  width: 0.9em;
+  height: 0.9em;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.85;
+  stroke-linecap: round;
+  opacity: 0.56;
+}
+.soap-bubble-search-input {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.82em;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.soap-bubble-search-input::placeholder {
+  color: inherit;
+  opacity: 0.48;
+}
+.soap-bubble-search-input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+}
+.soap-bubble-search-mic {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 1.45em;
+  height: 1.45em;
+  padding: 0;
+  border: 0;
+  border-radius: 9999px;
+  background: transparent;
+  color: inherit;
+  opacity: 0.58;
+  cursor: pointer;
+  transition:
+    opacity 0.18s ease,
+    background-color 0.18s ease,
+    transform 0.18s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.soap-bubble-search-mic:hover,
+.soap-bubble-search-mic:focus-visible,
+.soap-bubble-search-mic[data-active] {
+  opacity: 1;
+  background: rgb(255 255 255 / 0.08);
+  outline: none;
+}
+.soap-bubble-search-mic:active {
+  transform: scale(0.94);
+}
+.soap-bubble-search-mic-icon {
+  width: 0.88em;
+  height: 0.88em;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.85;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.soap-bubble-menu {
+  position: relative;
+  display: inline-block;
+}
+/* The trigger becomes the panel: it hides while the panel is out. */
+.soap-bubble-menu[data-open] > .soap-bubble-button {
+  opacity: 0;
+}
+.soap-bubble-menu-panel {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 20;
+  contain: layout style;
+}
+/* Closed, the panel leaves the page, so its film stops drawing. */
+.soap-bubble-menu:not([data-open]) .soap-bubble-menu-panel {
+  display: none;
+}
+/* The actions come into focus as the panel opens and blur away as it
+   closes, while the trigger's glyph does the opposite. On the compositor. */
+.soap-bubble-menu-content {
+  opacity: var(--soap-menu-focus, 0);
+  filter: blur(var(--soap-menu-blur, 12px));
+}
+.soap-bubble-menu-echo {
+  opacity: var(--soap-menu-echo, 1);
+}
+/* Room for the bounce: the open panel overshoots its size by up to a third
+   before it settles. */
+.soap-bubble-menu-panel > .soap-bubble-surface-canvas {
+  width: calc(135% + 2 * var(--soap-bubble-surface-bleed));
+  height: calc(135% + 2 * var(--soap-bubble-surface-bleed));
+}
+.soap-bubble-menu[data-align='end'] .soap-bubble-menu-panel > .soap-bubble-surface-canvas {
+  right: calc(-1 * var(--soap-bubble-surface-bleed));
+  left: auto;
+}
+.soap-bubble-menu[data-align='end'] .soap-bubble-menu-panel {
+  right: 0;
+  left: auto;
+}
+.soap-bubble-menu-echo {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+.soap-bubble-menu[data-align='end'] .soap-bubble-menu-echo {
+  right: 0;
+  left: auto;
+}
+/* The actions keep their own size while the bubble grows round them: the
+   clip scales with the bubble and the actions scale back by the inverse. */
+.soap-bubble-menu-clip {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  transform-origin: top left;
+}
+.soap-bubble-menu-clip,
+.soap-bubble-menu-content {
+  will-change: transform;
+}
+.soap-bubble-menu[data-align='end'] .soap-bubble-menu-clip {
+  transform-origin: top right;
+}
+.soap-bubble-menu-content {
+  position: absolute;
+  box-sizing: border-box;
+  top: 0;
+  left: 0;
+  transform-origin: top left;
+  display: flex;
+  flex-direction: column;
+  width: max-content;
+  min-width: 12.75em;
+  padding: 0.625em 1.4375em;
+}
+.soap-bubble-menu[data-align='end'] .soap-bubble-menu-content {
+  right: 0;
+  left: auto;
+  transform-origin: top right;
+}
+/* The active action is only a shade inside the bubble, not a bubble of its own. */
+.soap-bubble-menu-highlight {
+  position: absolute;
+  top: 0;
+  right: 0.3em;
+  left: 0.3em;
+  border-radius: 9999px;
+  background: rgb(0 0 0 / 0.13);
+  pointer-events: none;
+  transition:
+    transform 0.3s cubic-bezier(0.3, 1.3, 0.5, 1),
+    height 0.3s cubic-bezier(0.3, 1.3, 0.5, 1),
+    opacity 0.15s;
+}
+.soap-bubble-menu-item {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.875em;
+  min-height: 2.47em;
+  padding: 0.5em 0;
+  line-height: 1.2;
+  border: 0;
+  border-radius: 9999px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 1.0625em;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.soap-bubble-menu-item:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+.soap-bubble-menu-icon {
+  display: inline-grid;
+  width: 1.25em;
+  place-items: center;
+}
+.soap-bubble-menu-icon svg {
+  width: 1.15em;
+  height: 1.15em;
+}
+@media (prefers-reduced-motion: reduce) {
+  .soap-bubble-slider-thumb,
+  .soap-bubble-toggle-thumb,
+  .soap-bubble-toggle-thumb::before {
+    transition: none;
+  }
+  .soap-bubble-surface.soap-bubble-button,
+  .soap-bubble-menu-highlight {
+    transition: none;
+  }
+  .soap-bubble-menu[data-state] .soap-bubble-menu-content,
+  .soap-bubble-menu[data-state] .soap-bubble-menu-echo {
+    animation: none;
+  }
+}
+
+/* Dark pages: deeper shadows, a darker frosted fallback. */
+:where([data-theme='dark']) .soap-bubble-surface {
+  --soap-bubble-shadow: 0 1em 2.375em -1em rgb(0 0 0 / 0.7), 0 0.0625em 0.125em rgb(0 0 0 / 0.4);
+}
+:where([data-theme='dark']) .soap-bubble-menu-highlight {
+  background: rgb(255 255 255 / 0.13);
+}
+:where([data-theme='dark']) .soap-bubble-surface:not([data-soap-bubble-ready]) {
+  background: var(--soap-bubble-fallback-palette), rgb(255 255 255 / 0.08);
+}
+@media (prefers-color-scheme: dark) {
+  :where(:root:not([data-theme='light'])) .soap-bubble-surface {
+    --soap-bubble-shadow: 0 1em 2.375em -1em rgb(0 0 0 / 0.7), 0 0.0625em 0.125em rgb(0 0 0 / 0.4);
+  }
+  :where(:root:not([data-theme='light'])) .soap-bubble-menu-highlight {
+    background: rgb(255 255 255 / 0.13);
+  }
+  :where(:root:not([data-theme='light'])) .soap-bubble-surface:not([data-soap-bubble-ready]) {
+    background: var(--soap-bubble-fallback-palette), rgb(255 255 255 / 0.08);
+  }
+}
