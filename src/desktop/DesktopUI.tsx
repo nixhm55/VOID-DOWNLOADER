@@ -505,7 +505,9 @@ export function DesktopUI({
                       >
                         {formatMinimalArtist(activeTrack.artist)}
                       </span>
-                      {(activeTrack.qualityBadge === 'Lossless' || activeTrack.category === 'Lossless') && (
+                      {(activeTrack.qualityBadge === 'Lossless' ||
+                        activeTrack.category === 'Lossless' ||
+                        activeTrack.category === 'Hi-Res Lossless') && (
                         <span className="og-verified-spec-badge">{activeTrack.ogSpecBadge}</span>
                       )}
                     </span>

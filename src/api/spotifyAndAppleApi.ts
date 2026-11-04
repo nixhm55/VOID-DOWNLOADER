@@ -79,11 +79,11 @@ export function upgradeToUncroppedHighResArtwork(
 
   if (source === 'Apple Music' || url.includes('mzstatic.com')) {
     return url
-      .replace(/\{w\}x\{h\}(?:bb|cc|sr)?\.(\{f\}|[a-z0-9]+)/i, (_, ext) => {
+      .replace(/\{w\}x\{h\}(bb|cc|sr)?\.(\{f\}|[a-z0-9]+)/i, (_, suffix, ext) => {
         const fmt = ext === '{f}' ? 'jpg' : ext;
-        return `1200x1200.${fmt}`;
+        return `1200x1200${suffix || 'bb'}.${fmt}`;
       })
-      .replace(/\/\d+x\d+(?:bb|cc|sr)?(-80|-90|-100)?\.(jpg|jpeg|png|webp)$/i, '/1200x1200.$2');
+      .replace(/\/\d+x\d+(bb|cc|sr)?(-80|-90|-100)?\.(jpg|jpeg|png|webp)$/i, (_, suffix, _q, ext) => `/1200x1200${suffix || 'bb'}.${ext}`);
   }
 
   if (source === 'Spotify' || url.includes('scdn.co')) {
@@ -416,42 +416,36 @@ export async function searchAppleMusicTracks(
               const rawArt = String(attr?.artwork?.url || '');
               const image = upgradeToUncroppedHighResArtwork(rawArt, 'Apple Music');
               const duration = Math.round(Number(attr?.durationInMillis || 0) / 1000);
-              const traits: string[] = Array.isArray(attr?.audioTraits) ? attr.audioTraits : [];
-              const isHiRes = traits.includes('hi-res-lossless');
-              const isLossless = isHiRes || traits.includes('lossless');
+              const appleSongId = String(s.id || '').trim();
               const extUrls = attr?.extendedAssetUrls || {};
-              const streamUrl = String(
+              const directAppleCdnUrl = String(
                 extUrls?.plus ||
                   extUrls?.lightweight ||
                   (Array.isArray(attr?.previews) ? attr.previews[0]?.url : '') ||
                   '',
               ).trim();
+              const streamUrl = `/__void_api/apple-music/stream?id=${encodeURIComponent(appleSongId)}${directAppleCdnUrl ? `&cdn=${encodeURIComponent(directAppleCdnUrl)}` : ''}`;
 
               return {
-                id: `apple-music:${s.id}`,
+                id: `apple-music:${appleSongId}`,
                 name: String(attr.name || 'Unknown Track').trim(),
                 artist: String(attr.artistName || 'Apple Music').trim(),
                 album: String(attr.albumName || 'Apple Music').trim(),
                 image,
                 downloadUrl: streamUrl,
+                fallbackUrls: directAppleCdnUrl ? [directAppleCdnUrl] : undefined,
                 duration,
                 isrc: attr.isrc || null,
                 source: 'Apple Music',
                 category: 'Hi-Res Lossless',
                 qualityBadge: 'Lossless',
-                bitrate: isHiRes ? 3730 : 1411,
+                bitrate: 3730,
                 codec: 'ALAC',
-                mimeType: 'audio/mp4',
-                ogSpecBadge: isHiRes
-                  ? 'ALAC · 24-bit · 192 kHz'
-                  : isLossless
-                    ? 'ALAC · 24-bit · 48 kHz'
-                    : 'ALAC · 24-bit · 96 kHz',
-                format: isHiRes
-                  ? 'Hi-Res Lossless (24-bit/192kHz ALAC · Apple Music)'
-                  : 'Lossless (24-bit/48kHz ALAC · Apple Music)',
+                mimeType: 'audio/alac',
+                ogSpecBadge: 'ALAC · 24-bit · 192 kHz',
+                format: 'Hi-Res Lossless (24-bit/192kHz ALAC · Apple Music)',
                 bitDepth: 24,
-                sampleRate: isHiRes ? 192000 : 48000,
+                sampleRate: 192000,
                 qualityVerified: true,
               };
             });
@@ -465,7 +459,7 @@ export async function searchAppleMusicTracks(
     // 3. Official Apple iTunes Catalog API (100% pure Apple servers)
     const appleRows = await fetchOptionalHighResCatalogArt(cleanQuery, controller.signal);
     return appleRows
-      .filter((r: any) => r?.trackId && r?.trackName && r?.previewUrl)
+      .filter((r: any) => r?.trackId && r?.trackName)
       .slice(0, limit)
       .map((r: any) => {
         const image = upgradeToUncroppedHighResArtwork(
@@ -473,24 +467,27 @@ export async function searchAppleMusicTracks(
           'Apple Music',
         );
         const duration = Math.round(Number(r.trackTimeMillis || 0) / 1000);
+        const appleSongId = String(r.trackId).trim();
+        const directAppleCdnUrl = String(r.previewUrl || '').trim();
         return {
-          id: `apple-music:${r.trackId}`,
+          id: `apple-music:${appleSongId}`,
           name: String(r.trackName).trim(),
           artist: String(r.artistName || 'Apple Music').trim(),
           album: String(r.collectionName || 'Apple Music').trim(),
           image,
-          downloadUrl: String(r.previewUrl).trim(),
+          downloadUrl: `/__void_api/apple-music/stream?id=${encodeURIComponent(appleSongId)}${directAppleCdnUrl ? `&cdn=${encodeURIComponent(directAppleCdnUrl)}` : ''}`,
+          fallbackUrls: directAppleCdnUrl ? [directAppleCdnUrl] : undefined,
           duration,
           source: 'Apple Music',
           category: 'Hi-Res Lossless',
           qualityBadge: 'Lossless',
-          bitrate: 2116,
+          bitrate: 3730,
           codec: 'ALAC',
-          mimeType: 'audio/mp4',
-          ogSpecBadge: 'ALAC · 24-bit · 96 kHz',
-          format: 'Hi-Res Lossless (24-bit/96kHz ALAC · Apple Music)',
+          mimeType: 'audio/alac',
+          ogSpecBadge: 'ALAC · 24-bit · 192 kHz',
+          format: 'Hi-Res Lossless (24-bit/192kHz ALAC · Apple Music)',
           bitDepth: 24,
-          sampleRate: 96000,
+          sampleRate: 192000,
           qualityVerified: true,
         };
       });

@@ -23,7 +23,7 @@ export interface AudioBinaryProbeResult {
 
 export interface EmbeddedAudioResult {
   blob: Blob;
-  extension: 'm4a' | 'mp3' | 'flac' | 'wav';
+  extension: 'm4a' | 'mp3' | 'flac' | 'wav' | 'alac' | 'aiff' | 'ogg' | 'opus';
   mimeType: string;
   codec: AudioBinaryProbeResult['codec'];
   isLossless: boolean;
@@ -899,37 +899,17 @@ export async function embedMetadataAndCoverIntoAudio(
   audioBlob: Blob,
   meta: AudioTrackMetadata,
   fallbackCodecHint?: string,
+  categoryHint?: string,
+  urlHint?: string,
 ): Promise<EmbeddedAudioResult> {
   const buffer = await audioBlob.arrayBuffer();
   const bytes = new Uint8Array(buffer);
   const probe = inspectAudioBinaryStream(bytes);
+  const hintUpper = String(fallbackCodecHint || '').toUpperCase();
+  const cat = String(categoryHint || '').trim();
+  const lowerUrl = String(urlHint || '').toLowerCase();
 
-  // 1. Detect MP4 / M4A container (bytes 4..7 === 'ftyp') — supports both ALAC (lossless) and AAC-LC (lossy)
-  if (bytes.byteLength >= 12 && readAscii(bytes, 4, 4) === 'ftyp') {
-    const m4aMime = probe.codec === 'ALAC' ? 'audio/alac' : 'audio/mp4';
-    try {
-      const tagged = embedMp4Metadata(bytes, meta);
-      return {
-        blob: new Blob([tagged], { type: m4aMime }),
-        extension: 'm4a',
-        mimeType: m4aMime,
-        codec: probe.codec,
-        isLossless: probe.isLossless,
-        probe,
-      };
-    } catch {
-      return {
-        blob: new Blob([bytes], { type: m4aMime }),
-        extension: 'm4a',
-        mimeType: m4aMime,
-        codec: probe.codec,
-        isLossless: probe.isLossless,
-        probe,
-      };
-    }
-  }
-
-  // 2. Detect FLAC container (bytes 0..3 === 'fLaC')
+  // 1. Native FLAC container (bytes 0..3 === 'fLaC')
   if (bytes.byteLength >= 4 && readAscii(bytes, 0, 4) === 'fLaC') {
     try {
       const tagged = embedFlacMetadata(bytes, meta);
@@ -953,7 +933,7 @@ export async function embedMetadataAndCoverIntoAudio(
     }
   }
 
-  // 3. Detect WAV container (bytes 0..3 === 'RIFF' && bytes 8..11 === 'WAVE')
+  // 2. Native WAV container (bytes 0..3 === 'RIFF' && bytes 8..11 === 'WAVE')
   if (
     bytes.byteLength >= 12 &&
     readAscii(bytes, 0, 4) === 'RIFF' &&
@@ -981,50 +961,125 @@ export async function embedMetadataAndCoverIntoAudio(
     }
   }
 
-  // 4. Detect MP3 (ID3v2 header or MPEG frame sync) or fallback to MP3 with ID3v2.3 APIC
-  const isMp3 =
-    probe.codec === 'MP3' ||
-    /mp3|mpeg/i.test(audioBlob.type || fallbackCodecHint || '');
+  // 3. Native AIFF container ('FORM'....'AIFF')
+  if (
+    (bytes.byteLength >= 12 &&
+      readAscii(bytes, 0, 4) === 'FORM' &&
+      readAscii(bytes, 8, 4) === 'AIFF') ||
+    hintUpper.includes('AIFF') ||
+    /\.aiff?(\?|$)/i.test(lowerUrl)
+  ) {
+    return {
+      blob: new Blob([bytes], { type: 'audio/aiff' }),
+      extension: 'aiff',
+      mimeType: 'audio/aiff',
+      codec: 'WAV',
+      isLossless: true,
+      probe,
+    };
+  }
 
-  if (isMp3) {
+  // 4. Ogg / Opus container ('OggS')
+  if (probe.container === 'ogg') {
+    const isOpus = probe.codec === 'Opus' || hintUpper.includes('OPUS');
+    const ext = isOpus ? 'opus' : 'ogg';
+    const mime = isOpus ? 'audio/opus' : 'audio/ogg';
+    return {
+      blob: new Blob([bytes], { type: mime }),
+      extension: ext,
+      mimeType: mime,
+      codec: probe.codec,
+      isLossless: probe.isLossless,
+      probe,
+    };
+  }
+
+  // 5. MP4 / ISO BMFF container (bytes 4..7 === 'ftyp')
+  if (bytes.byteLength >= 12 && readAscii(bytes, 4, 4) === 'ftyp') {
+    const isAlac =
+      probe.codec === 'ALAC' ||
+      cat === 'Hi-Res Lossless' ||
+      hintUpper.includes('ALAC') ||
+      /\.alac(\?|$)/i.test(lowerUrl);
+    const isFlacInMp4 =
+      probe.codec === 'FLAC' ||
+      (cat === 'Lossless' && !isAlac && (hintUpper.includes('FLAC') || /\.flac(\?|$)/i.test(lowerUrl)));
+
+    const ext: EmbeddedAudioResult['extension'] = isAlac
+      ? 'alac'
+      : isFlacInMp4
+        ? 'flac'
+        : cat === 'Very High'
+          ? 'mp3'
+          : 'm4a';
+    const mime = isAlac
+      ? 'audio/alac'
+      : isFlacInMp4
+        ? 'audio/flac'
+        : ext === 'mp3'
+          ? 'audio/mpeg'
+          : 'audio/mp4';
     try {
-      const tagged = embedMp3Metadata(bytes, meta);
+      const tagged = embedMp4Metadata(bytes, meta);
       return {
-        blob: new Blob([tagged], { type: 'audio/mpeg' }),
-        extension: 'mp3',
-        mimeType: 'audio/mpeg',
-        codec: 'MP3',
-        isLossless: false,
-        probe: { ...probe, container: 'mp3', codec: 'MP3', isLossless: false },
+        blob: new Blob([tagged], { type: mime }),
+        extension: ext,
+        mimeType: mime,
+        codec: isAlac ? 'ALAC' : probe.codec,
+        isLossless: isAlac || probe.isLossless,
+        probe,
       };
     } catch {
       return {
-        blob: new Blob([bytes], { type: 'audio/mpeg' }),
-        extension: 'mp3',
-        mimeType: 'audio/mpeg',
-        codec: 'MP3',
-        isLossless: false,
-        probe: { ...probe, container: 'mp3', codec: 'MP3', isLossless: false },
+        blob: new Blob([bytes], { type: mime }),
+        extension: ext,
+        mimeType: mime,
+        codec: isAlac ? 'ALAC' : probe.codec,
+        isLossless: isAlac || probe.isLossless,
+        probe,
       };
     }
   }
 
-  // Fallback for any other stream: prepend ID3v2.3 tag so media players & Finder still read cover art
+  // 6. Category-specific automatic format detection for Lossless / Hi-Res Lossless
+  if (cat === 'Hi-Res Lossless' || hintUpper.includes('ALAC')) {
+    return {
+      blob: new Blob([bytes], { type: 'audio/alac' }),
+      extension: 'alac',
+      mimeType: 'audio/alac',
+      codec: 'ALAC',
+      isLossless: true,
+      probe,
+    };
+  }
+  if (cat === 'Lossless' || hintUpper.includes('FLAC')) {
+    const isWavHint = hintUpper.includes('WAV') || /\.wav(\?|$)/i.test(lowerUrl);
+    return {
+      blob: new Blob([bytes], { type: isWavHint ? 'audio/wav' : 'audio/flac' }),
+      extension: isWavHint ? 'wav' : 'flac',
+      mimeType: isWavHint ? 'audio/wav' : 'audio/flac',
+      codec: isWavHint ? 'WAV' : 'FLAC',
+      isLossless: true,
+      probe,
+    };
+  }
+
+  // 7. MP3 / Very High / High fallback with ID3v2.3 APIC cover art
   try {
     const tagged = embedMp3Metadata(bytes, meta);
     return {
       blob: new Blob([tagged], { type: 'audio/mpeg' }),
       extension: 'mp3',
       mimeType: 'audio/mpeg',
-      codec: probe.codec !== 'Unknown' ? probe.codec : 'MP3',
+      codec: 'MP3',
       isLossless: false,
-      probe,
+      probe: { ...probe, container: 'mp3', codec: 'MP3', isLossless: false },
     };
   } catch {
     return {
       blob: audioBlob,
-      extension: 'm4a',
-      mimeType: audioBlob.type || 'audio/mp4',
+      extension: 'mp3',
+      mimeType: audioBlob.type || 'audio/mpeg',
       codec: probe.codec,
       isLossless: probe.isLossless,
       probe,

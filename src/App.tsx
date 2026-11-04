@@ -1104,23 +1104,12 @@ export function App({ children }: AppProps): JSX.Element {
       const key = `${item.source || 'track'}:${item.id}`;
       const cat = getTrackSearchCategory(item);
 
-      // STRICT OG DOWNLOAD PROTECTION:
-      // Only allow download if rights explicitly permit download AND binary bytes pass genuine lossless check.
-      // Never convert lossy audio into ALAC/FLAC for OG.
-      if (cat === 'OG') {
-        if (!isEligibleOgTrack(item) || item.ogDownloadAllowed === false) {
-          return;
-        }
-      }
-
       setDownloadingIds((prev) => ({ ...prev, [key]: 'loading' }));
 
       try {
-        const isOgCategory = cat === 'OG';
         const isLosslessCategory = cat === 'Lossless' || cat === 'Hi-Res Lossless';
         const ytId = extractYouTubeIdFromTrack(item);
         const isYtTrack =
-          !isOgCategory &&
           !isLosslessCategory &&
           (Boolean(ytId) ||
             formatProviderLabel(item.source, item) === 'YouTube' ||
@@ -1175,6 +1164,8 @@ export function App({ children }: AppProps): JSX.Element {
             coverJpegBytes: artworkInfo.coverJpegBytes,
           },
           item.codec || item.mimeType,
+          cat,
+          item.downloadUrl,
         );
 
         await putVoidDownload({

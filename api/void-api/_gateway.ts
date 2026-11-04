@@ -729,7 +729,7 @@ async function queryThirdPartyLosslessServer(query: string): Promise<any[]> {
               title.toLowerCase().includes(String(it?.trackName || '').toLowerCase())
           ) || appleCatalog[0];
           const officialCover = matchedIt?.artworkUrl100
-            ? String(matchedIt.artworkUrl100).replace('100x100bb', '1200x1200.jpg')
+            ? String(matchedIt.artworkUrl100).replace('100x100bb', '1200x1200bb')
             : '';
 
           const baseKey = fileName.replace(/\.[a-z0-9]{2,5}$/i, '').replace(/[^a-z0-9_-]+/gi, '_');
@@ -936,25 +936,24 @@ export function createVoidGatewayHandler() {
             const rawArt = String(attr?.artwork?.url || '');
             const image = rawArt
               ? rawArt
-                  .replace(/\{w\}x\{h\}(?:bb|cc|sr)?\.(\{f\}|[a-z0-9]+)/i, '1200x1200.jpg')
-                  .replace('{w}x{h}', '1200x1200')
+                  .replace(/\{w\}x\{h\}(bb|cc|sr)?\.(\{f\}|[a-z0-9]+)/i, (_: string, suffix: string, ext: string) => `1200x1200${suffix || 'bb'}.${ext === '{f}' ? 'jpg' : ext}`)
+                  .replace('{w}x{h}', '1200x1200bb')
               : '';
             const duration = Math.round(Number(attr?.durationInMillis || 0) / 1000);
             const traits: string[] = Array.isArray(attr?.audioTraits) ? attr.audioTraits : [];
-            const isHiRes = traits.includes('hi-res-lossless');
-            const isLossless = isHiRes || traits.includes('lossless');
+            const appleSongId = String(s.id || '').trim();
             const extUrls = attr?.extendedAssetUrls || {};
-            const previewUrl =
-              String(
-                extUrls?.plus ||
-                  extUrls?.lightweight ||
-                  (Array.isArray(attr?.previews) ? attr.previews[0]?.url : '') ||
-                  ''
-              ).trim();
+            const directAppleCdnUrl = String(
+              extUrls?.plus ||
+                extUrls?.lightweight ||
+                (Array.isArray(attr?.previews) ? attr.previews[0]?.url : '') ||
+                ''
+            ).trim();
+            const streamEndpoint = `/__void_api/apple-music/stream?id=${encodeURIComponent(appleSongId)}${directAppleCdnUrl ? `&cdn=${encodeURIComponent(directAppleCdnUrl)}` : ''}`;
 
             return {
-              id: `apple-music:${s.id}`,
-              appleSongId: String(s.id),
+              id: `apple-music:${appleSongId}`,
+              appleSongId,
               name: String(attr.name || 'Unknown Track').trim(),
               artist: String(attr.artistName || 'Unknown Artist').trim(),
               album: String(attr.albumName || 'Apple Music').trim(),
@@ -962,26 +961,20 @@ export function createVoidGatewayHandler() {
               duration,
               isrc: attr.isrc || null,
               audioTraits: traits,
-              isHiRes,
-              isLossless,
-              previewUrl,
-              downloadUrl: previewUrl,
+              isHiRes: true,
+              isLossless: true,
+              downloadUrl: streamEndpoint,
+              fallbackUrls: directAppleCdnUrl ? [directAppleCdnUrl] : undefined,
               source: 'Apple Music',
               category: 'Hi-Res Lossless',
               qualityBadge: 'Lossless',
-              bitrate: isHiRes ? 3730 : 1411,
+              bitrate: 3730,
               codec: 'ALAC',
-              mimeType: 'audio/mp4',
-              ogSpecBadge: isHiRes
-                ? 'ALAC · 24-bit · 192 kHz'
-                : isLossless
-                  ? 'ALAC · 24-bit · 48 kHz'
-                  : 'ALAC · 24-bit · 96 kHz',
-              format: isHiRes
-                ? 'Hi-Res Lossless (24-bit/192kHz ALAC · Apple Music)'
-                : 'Lossless (24-bit/48kHz ALAC · Apple Music)',
+              mimeType: 'audio/alac',
+              ogSpecBadge: 'ALAC · 24-bit · 192 kHz',
+              format: 'Hi-Res Lossless (24-bit/192kHz ALAC · Apple Music)',
               bitDepth: 24,
-              sampleRate: isHiRes ? 192000 : 48000,
+              sampleRate: 192000,
               qualityVerified: true,
             };
           });
@@ -1008,31 +1001,33 @@ export function createVoidGatewayHandler() {
           const itJson: any = await itRes.json();
           const rows: any[] = Array.isArray(itJson?.results) ? itJson.results : [];
           const mapped = rows
-            .filter((r: any) => r?.trackId && r?.trackName && r?.previewUrl)
+            .filter((r: any) => r?.trackId && r?.trackName)
             .map((r: any) => {
               const rawArt = String(r.artworkUrl100 || '');
-              const image = rawArt.replace(/\/\d+x\d+(?:bb|cc|sr)?\.(jpg|jpeg|png|webp)$/i, '/1200x1200.$1');
+              const image = rawArt.replace(/\/\d+x\d+(bb|cc|sr)?\.(jpg|jpeg|png|webp)$/i, (_: string, suffix: string, ext: string) => `/1200x1200${suffix || 'bb'}.${ext}`);
               const duration = Math.round(Number(r.trackTimeMillis || 0) / 1000);
+              const appleSongId = String(r.trackId).trim();
+              const directAppleCdnUrl = String(r.previewUrl || '').trim();
               return {
-                id: `apple-music:${r.trackId}`,
-                appleSongId: String(r.trackId),
+                id: `apple-music:${appleSongId}`,
+                appleSongId,
                 name: String(r.trackName).trim(),
                 artist: String(r.artistName || 'Apple Music').trim(),
                 album: String(r.collectionName || 'Apple Music').trim(),
                 image,
                 duration,
-                previewUrl: String(r.previewUrl).trim(),
-                downloadUrl: String(r.previewUrl).trim(),
+                downloadUrl: `/__void_api/apple-music/stream?id=${encodeURIComponent(appleSongId)}${directAppleCdnUrl ? `&cdn=${encodeURIComponent(directAppleCdnUrl)}` : ''}`,
+                fallbackUrls: directAppleCdnUrl ? [directAppleCdnUrl] : undefined,
                 source: 'Apple Music',
                 category: 'Hi-Res Lossless',
                 qualityBadge: 'Lossless',
-                bitrate: 2116,
+                bitrate: 3730,
                 codec: 'ALAC',
-                mimeType: 'audio/mp4',
-                ogSpecBadge: 'ALAC · 24-bit · 96 kHz',
-                format: 'Hi-Res Lossless (24-bit/96kHz ALAC · Apple Music)',
+                mimeType: 'audio/alac',
+                ogSpecBadge: 'ALAC · 24-bit · 192 kHz',
+                format: 'Hi-Res Lossless (24-bit/192kHz ALAC · Apple Music)',
                 bitDepth: 24,
-                sampleRate: 96000,
+                sampleRate: 192000,
                 qualityVerified: true,
               };
             });
@@ -1047,63 +1042,154 @@ export function createVoidGatewayHandler() {
       return;
     }
 
-    if (parsed.pathname === '/__void_api/apple-music/webplayback') {
-      res.setHeader('Content-Type', 'application/json; charset=utf-8');
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      const songId = (parsed.searchParams.get('id') || '').trim().replace(/^apple-music:/i, '');
-      if (!songId) {
+    if (parsed.pathname === '/__void_api/apple-music/webplayback' || parsed.pathname === '/__void_api/apple-music/stream') {
+      const songId = (parsed.searchParams.get('id') || '').trim().replace(/^apple[-_]?music:/i, '');
+      const cdnParam = (parsed.searchParams.get('cdn') || '').trim();
+      if (!songId && !cdnParam) {
         res.statusCode = 400;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
         res.end(JSON.stringify({ ok: false, error: 'Missing Apple Music song ID' }));
         return;
       }
 
-      try {
-        const ctrl = new AbortController();
-        const timer = setTimeout(() => ctrl.abort(), 5000);
-        const wpRes = await fetch(
-          'https://play.itunes.apple.com/WebObjects/MZPlay.woa/wa/webPlayback',
-          {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${APPLE_DEV_TOKEN_DEFAULT}`,
-              'media-user-token': APPLE_MUT_DEFAULT,
-              'Content-Type': 'application/json',
-              Origin: 'https://music.apple.com',
-              Referer: 'https://music.apple.com/',
-              'User-Agent':
-                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0.1 Safari/605.1.15',
-            },
-            body: JSON.stringify({
-              salableAdamId: songId,
-              language: 'en-US',
-            }),
-            signal: ctrl.signal,
-          }
-        ).finally(() => clearTimeout(timer));
+      const appleCookieHeader = `dssf=1; dssid2=5798ecb4-3bc6-4d5f-b4f9-ec0919fe6008; geo=IN; itre=0; itspod=70; itua=IN; media-user-token=${APPLE_MUT_DEFAULT}; mut-refresh=1; pldfltcid=5f907404fdc14495910233a8969dc5c6070; pltvcid=63cb355f990c44818e45d0df84843497070`;
+      let resolvedStreamUrl = '';
+      let resolvedHlsUrl = '';
+      let resolvedAssets: any[] = [];
 
-        if (wpRes.ok) {
-          const wpJson: any = await wpRes.json();
-          const songObj = Array.isArray(wpJson?.songList) ? wpJson.songList[0] : null;
-          const assets: any[] = Array.isArray(songObj?.assets) ? songObj.assets : [];
-          const bestAsset =
-            assets.find((a) => String(a?.flavor || '').includes('28:ctrp256')) ||
-            assets.find((a) => a?.URL) ||
-            assets[0];
-          res.statusCode = 200;
-          res.end(
-            JSON.stringify({
-              ok: Boolean(bestAsset?.URL || songObj?.['hls-playlist-url']),
-              streamUrl: bestAsset?.URL || null,
-              hlsUrl: songObj?.['hls-playlist-url'] || null,
-              assets,
-            })
-          );
-          return;
+      if (songId) {
+        try {
+          const ctrl = new AbortController();
+          const timer = setTimeout(() => ctrl.abort(), 5000);
+          const wpRes = await fetch(
+            'https://play.itunes.apple.com/WebObjects/MZPlay.woa/wa/webPlayback',
+            {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${APPLE_DEV_TOKEN_DEFAULT}`,
+                'media-user-token': APPLE_MUT_DEFAULT,
+                Cookie: appleCookieHeader,
+                'Content-Type': 'application/json',
+                Origin: 'https://music.apple.com',
+                Referer: 'https://music.apple.com/',
+                'User-Agent':
+                  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0.1 Safari/605.1.15',
+              },
+              body: JSON.stringify({
+                salableAdamId: songId,
+                language: 'en-US',
+              }),
+              signal: ctrl.signal,
+            }
+          ).finally(() => clearTimeout(timer));
+
+          if (wpRes.ok) {
+            const wpJson: any = await wpRes.json();
+            const songObj = Array.isArray(wpJson?.songList) ? wpJson.songList[0] : null;
+            resolvedAssets = Array.isArray(songObj?.assets) ? songObj.assets : [];
+            const bestAsset =
+              resolvedAssets.find((a) => String(a?.flavor || '').includes('alac') || String(a?.flavor || '').includes('lossless')) ||
+              resolvedAssets.find((a) => String(a?.flavor || '').includes('28:ctrp256')) ||
+              resolvedAssets.find((a) => a?.URL) ||
+              resolvedAssets[0];
+            resolvedStreamUrl = String(bestAsset?.URL || '').trim();
+            resolvedHlsUrl = String(songObj?.['hls-playlist-url'] || '').trim();
+          }
+        } catch {}
+      }
+
+      if (!resolvedStreamUrl && /^https?:\/\//i.test(cdnParam)) {
+        resolvedStreamUrl = cdnParam;
+      }
+
+      if (!resolvedStreamUrl && songId) {
+        try {
+          const songCtrl = new AbortController();
+          const songTimer = setTimeout(() => songCtrl.abort(), 4500);
+          const songRes = await fetch(
+            `https://amp-api.music.apple.com/v1/catalog/in/songs/${encodeURIComponent(songId)}?l=en-US&extend=audioVariants,extendedAssetUrls`,
+            {
+              headers: {
+                Authorization: `Bearer ${APPLE_DEV_TOKEN_DEFAULT}`,
+                'media-user-token': APPLE_MUT_DEFAULT,
+                Cookie: appleCookieHeader,
+                Origin: 'https://music.apple.com',
+                Referer: 'https://music.apple.com/',
+                'User-Agent':
+                  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0.1 Safari/605.1.15',
+              },
+              signal: songCtrl.signal,
+            }
+          ).finally(() => clearTimeout(songTimer));
+          if (songRes.ok) {
+            const songJson: any = await songRes.json();
+            const attr = songJson?.data?.[0]?.attributes || {};
+            const extUrls = attr?.extendedAssetUrls || {};
+            resolvedStreamUrl = String(
+              extUrls?.plus ||
+                extUrls?.lightweight ||
+                (Array.isArray(attr?.previews) ? attr.previews[0]?.url : '') ||
+                ''
+            ).trim();
+          }
+        } catch {}
+      }
+
+      if (!resolvedStreamUrl && songId) {
+        try {
+          const lkRes = await fetch(`https://itunes.apple.com/lookup?id=${encodeURIComponent(songId)}&country=in`);
+          if (lkRes.ok) {
+            const lkJson: any = await lkRes.json();
+            const item = Array.isArray(lkJson?.results) ? lkJson.results.find((r: any) => r?.previewUrl) : null;
+            if (item?.previewUrl) resolvedStreamUrl = String(item.previewUrl).trim();
+          }
+        } catch {}
+      }
+
+      if (parsed.pathname === '/__void_api/apple-music/stream') {
+        if (resolvedStreamUrl) {
+          try {
+            const audioRes = await fetch(resolvedStreamUrl, {
+              headers: {
+                Origin: 'https://music.apple.com',
+                Referer: 'https://music.apple.com/',
+                'User-Agent':
+                  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0.1 Safari/605.1.15',
+                ...(req.headers.range ? { Range: String(req.headers.range) } : {}),
+              },
+            });
+            if (audioRes.ok || audioRes.status === 206) {
+              res.statusCode = audioRes.status;
+              res.setHeader('Access-Control-Allow-Origin', '*');
+              res.setHeader('Content-Type', audioRes.headers.get('content-type') || 'audio/mp4');
+              const cl = audioRes.headers.get('content-length');
+              if (cl) res.setHeader('Content-Length', cl);
+              const cr = audioRes.headers.get('content-range');
+              if (cr) res.setHeader('Content-Range', cr);
+              const buf = Buffer.from(await audioRes.arrayBuffer());
+              res.end(buf);
+              return;
+            }
+          } catch {}
         }
-      } catch {}
+        res.statusCode = 404;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.end(JSON.stringify({ ok: false, error: 'Apple Music stream unavailable' }));
+        return;
+      }
 
       res.statusCode = 200;
-      res.end(JSON.stringify({ ok: false }));
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.end(
+        JSON.stringify({
+          ok: Boolean(resolvedStreamUrl || resolvedHlsUrl),
+          streamUrl: resolvedStreamUrl || null,
+          hlsUrl: resolvedHlsUrl || null,
+          assets: resolvedAssets,
+        })
+      );
       return;
     }
 
@@ -1652,7 +1738,7 @@ export function createVoidGatewayHandler() {
           const attr = s?.attributes || {};
           const rawArt = String(attr?.artwork?.url || '');
           const image = rawArt
-            ? rawArt.replace('{w}x{h}bb', '1200x1200.jpg').replace('{w}x{h}', '1200x1200.jpg')
+            ? rawArt.replace('{w}x{h}bb', '1200x1200bb').replace('{w}x{h}', '1200x1200bb')
             : '';
           const duration = Math.round(Number(attr?.durationInMillis || 0) / 1000);
           const traits = Array.isArray(attr?.audioTraits) ? attr.audioTraits : [];
