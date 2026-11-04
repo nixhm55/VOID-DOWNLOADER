@@ -247,13 +247,7 @@ export function MobileUI({
                     <div ref={resultsListRef} className="search-results-list">
                       {searchResults.length === 0 ? (
                         <div className="search-status-empty">
-                          {isSearching
-                            ? activeCategory === 'OG'
-                              ? 'Verifying genuine lossless OG streams…'
-                              : 'Searching songs…'
-                            : activeCategory === 'OG'
-                              ? 'No verified lossless & rights-cleared OG tracks found for this query'
-                              : 'No matching songs found'}
+                          {isSearching ? 'Searching songs…' : 'No matching songs found'}
                         </div>
                     ) : (
                       searchResults.map((item, idx) => {
@@ -262,8 +256,11 @@ export function MobileUI({
                         const dlState = downloadingIds[rowKey];
                         const durText = formatDuration(item.duration);
                         const artistText = formatMinimalArtist(item.artist);
-                        const isOgItem = activeCategory === 'OG' || item.category === 'OG';
-                        const canDownload = !isOgItem || item.ogDownloadAllowed !== false;
+                        const isLosslessItem =
+                          activeCategory === 'Lossless' ||
+                          activeCategory === 'Hi-Res Lossless' ||
+                          item.qualityBadge === 'Lossless';
+                        const canDownload = true;
 
                         return (
                           <DgReveal
@@ -285,15 +282,15 @@ export function MobileUI({
                                 <span className="search-result-artist" title={item.artist}>
                                   {artistText}
                                 </span>
-                                {isOgItem && item.ogSpecBadge && (
+                                {isLosslessItem && (item.ogSpecBadge || item.format) && (
                                   <span
                                     className="og-verified-spec-badge"
-                                    title={`${item.ogSpecBadge} · ${item.source || ''}`}
+                                    title={`${item.ogSpecBadge || item.format} · ${item.source || ''}`}
                                   >
                                     {item.ogSpecBadge}
                                   </span>
                                 )}
-                                {isOgItem && item.source && (
+                                {isLosslessItem && item.source && (
                                   <span className="og-verified-provider-badge" title={item.album}>
                                     {item.source}
                                   </span>
@@ -485,7 +482,7 @@ export function MobileUI({
                       >
                         {formatMinimalArtist(activeTrack.artist)}
                       </span>
-                      {activeTrack.category === 'OG' && activeTrack.ogSpecBadge && (
+                      {(activeTrack.qualityBadge === 'Lossless' || activeTrack.category === 'Lossless') && (
                         <span className="og-verified-spec-badge">{activeTrack.ogSpecBadge}</span>
                       )}
                     </span>

@@ -1,0 +1,10 @@
+/* Desktop UI specific styles (viewport > 768px) */
+.void-desktop-stage {
+  padding: clamp(1.5rem, 6vw, 4rem);
+}
+
+.void-desktop-search-section {
+  max-width: 42rem;
+  margin-top: clamp(5.5rem, 15vh, 8.5rem);
+  font-size: 20px;
+}

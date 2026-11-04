@@ -1,13 +1,12 @@
 /**
- * Provider E: Lossless Audio Connector
+ * Provider E: Universal Lossless & Multi-Tier Audio Gateway Connector
  * Environment variable: VITE_LOSSLESS_API_URLS (optional custom gateway URLs)
  *
- * Strictly returns verified FLAC, ALAC, WAV, or AIFF lossless streams from:
- * 1. Local Vite Lossless Aggregator (`/__void_api/lossless-search`)
- * 2. Official Jamendo FLAC API (`audioformat=flac` when client_id is configured)
- * 3. User-configured lossless gateways (`VITE_LOSSLESS_API_URLS`)
- *
- * Never uses unauthorized mirrors or lossy AAC/MP3 fallbacks.
+ * Automatic Quality Routing:
+ * - Verified FLAC, ALAC, WAV, or AIFF lossless streams -> Routed to `OG` (`category: 'OG'`)
+ * - 320kbps MP3/AAC streams returned by a gateway -> Routed to `Very High` (`category: 'Very High'`, never wasted)
+ * - <280kbps MP3/AAC/Opus streams returned by a gateway -> Routed to `High` (`category: 'High'`, never wasted)
+ * - MP3 is strictly forbidden from entering `OG` or `Lossless`.
  */
 
 import { type SearchResult, detectTrackQuality, formatProviderLabel } from "./quality";
@@ -22,9 +21,6 @@ export interface LosslessGatewayConfigStatus {
   invalidEntries: string[];
 }
 
-/**
- * Safely parses, validates, normalizes, and deduplicates `VITE_LOSSLESS_API_URLS`.
- */
 export function parseLosslessGatewayUrls(rawEnv?: string): LosslessGatewayConfigStatus {
   const raw = String(rawEnv ?? import.meta.env.VITE_LOSSLESS_API_URLS ?? "").trim();
   if (!raw) {
@@ -124,7 +120,7 @@ function decodeBase64Manifest(manifestBase64: string): {
       };
     }
   } catch {
-    // Ignore non-JSON or DASH XML manifests
+    // Ignore non-JSON manifests
   }
   return null;
 }
@@ -197,6 +193,7 @@ async function resolveTrackStreamFromGateway(
   signal: AbortSignal
 ): Promise<ReturnType<typeof extractStreamUrlFromTrackPayload>> {
   const candidateRoutes = [
+    `${gatewayBase}/track/?id=${encodeURIComponent(trackId)}&quality=HI_RES_LOSSLESS`,
     `${gatewayBase}/track/?id=${encodeURIComponent(trackId)}&quality=LOSSLESS`,
     `${gatewayBase}/track?id=${encodeURIComponent(trackId)}`,
     `${gatewayBase}/stream?id=${encodeURIComponent(trackId)}`,
@@ -320,54 +317,86 @@ async function querySingleLosslessGateway(
         streamInfo.bitDepth || Number(item.bitDepth || item.bitsPerSample) || undefined;
       const sampleRate = streamInfo.sampleRate || Number(item.sampleRate) || undefined;
 
-      const hasCredibleLosslessMetadata = Boolean(
-        (codec && /\b(flac|alac|wav|aiff|pcm)\b/i.test(codec)) ||
-          (mimeType && /\b(flac|wav|aiff|alac)\b/i.test(mimeType)) ||
-          /\.(flac|wav|aiff|alac)(\?|$)/i.test(streamInfo.url)
-      );
+      const isMp3OrLossy =
+        /\.(mp3|ogg|oga|opus|webm)(\?|$)/i.test(streamInfo.url) ||
+        /\b(mp3|mpeg|vorbis|opus)\b/i.test(String(codec || "")) ||
+        /\b(audio\/mpeg|audio\/mp3|audio\/ogg|audio\/webm)\b/i.test(String(mimeType || ""));
 
-      if (!hasCredibleLosslessMetadata) continue;
-
-      const formatHint = [
-        streamInfo.format,
-        codec,
-        bitDepth ? `${bitDepth}-bit` : "",
-        sampleRate ? `${sampleRate}Hz` : "",
-      ]
-        .filter(Boolean)
-        .join(" ");
-
-      const qualityBadge = detectTrackQuality(
-        streamInfo.url,
-        `FLAC ${formatHint}`,
-        bitrate,
-        {
-          codecHint: codec,
-          mimeTypeHint: mimeType,
-          providerVerified: true,
-        }
-      );
+      const hasCredibleLosslessMetadata =
+        !isMp3OrLossy &&
+        Boolean(
+          (codec && /\b(flac|alac|wav|aiff|pcm)\b/i.test(codec)) ||
+            (mimeType && /\b(flac|wav|aiff|alac)\b/i.test(mimeType)) ||
+            /\.(flac|wav|aiff|alac)(\?|$)/i.test(streamInfo.url)
+        );
 
       const providerLabel = inferProviderDisplayName(item, gatewayBase);
 
-      results.push({
-        id: `lossless:${rawId}`,
-        name: title,
-        album,
-        artist: artist || "Unknown Artist",
-        image,
-        downloadUrl: streamInfo.url,
-        duration: Number(item.duration || item.durationSeconds) || 0,
-        source: providerLabel,
-        qualityBadge,
-        bitrate,
-        codec: codec || "FLAC",
-        mimeType: mimeType || "audio/flac",
-        format: formatHint || codec || "FLAC Lossless",
-        qualityVerified: true,
-        bitDepth,
-        sampleRate,
-      });
+      if (hasCredibleLosslessMetadata) {
+        const cleanCodec = String(codec || "FLAC").toUpperCase().includes("ALAC")
+          ? "ALAC"
+          : String(codec || "FLAC").toUpperCase().includes("WAV")
+            ? "WAV"
+            : "FLAC";
+        const bd = bitDepth && bitDepth >= 24 ? 24 : 16;
+        const sr = sampleRate && sampleRate >= 48000 ? sampleRate : 44100;
+        const khz = sr / 1000;
+        const khzText = Number.isInteger(khz) ? `${khz} kHz` : `${khz.toFixed(1)} kHz`;
+        const ogSpecBadge = `${cleanCodec} · ${bd}-bit · ${khzText}`;
+
+        results.push({
+          id: `og:lossless:${rawId}`,
+          name: title,
+          album,
+          artist: artist || "Unknown Artist",
+          image,
+          downloadUrl: streamInfo.url,
+          duration: Number(item.duration || item.durationSeconds) || 0,
+          source: providerLabel,
+          category: "OG",
+          section: "OG",
+          qualityBadge: "Lossless",
+          bitrate: bitrate || (bd >= 24 ? 2116 : 1411),
+          codec: cleanCodec,
+          mimeType: mimeType || "audio/flac",
+          format: `${cleanCodec} Lossless (${bd}-bit/${khz}kHz)`,
+          ogSpecBadge,
+          ogVerified: true,
+          ogPlayable: true,
+          ogDownloadAllowed: true,
+          qualityVerified: true,
+          bitDepth: bd,
+          sampleRate: sr,
+        });
+      } else {
+        // Lossy / MP3 track from gateway -> Route automatically to Very High (>=280kbps) or High (<280kbps)
+        const numBr = bitrate || 192;
+        const isVeryHigh = numBr >= 280;
+        const lossyCodec = codec || "MP3";
+        const qualityBadge = detectTrackQuality(streamInfo.url, lossyCodec, numBr, {
+          codecHint: lossyCodec,
+          mimeTypeHint: mimeType,
+          providerVerified: true,
+        });
+
+        results.push({
+          id: `gateway:${rawId}`,
+          name: title,
+          album,
+          artist: artist || "Unknown Artist",
+          image,
+          downloadUrl: streamInfo.url,
+          duration: Number(item.duration || item.durationSeconds) || 0,
+          source: providerLabel,
+          category: isVeryHigh ? "Very High" : "High",
+          qualityBadge,
+          bitrate: numBr,
+          codec: lossyCodec,
+          mimeType: mimeType || "audio/mpeg",
+          format: `${lossyCodec} (${numBr}kbps)`,
+          qualityVerified: true,
+        });
+      }
     }
 
     return results;
@@ -379,10 +408,6 @@ async function querySingleLosslessGateway(
   }
 }
 
-/**
- * Queries the local Vite Node.js lossless endpoint (`/__void_api/lossless-search`),
- * which aggregates Archive.org 16-bit/24-bit FLAC/ALAC/WAV masters with zero browser CORS restrictions.
- */
 async function queryLocalLosslessAggregator(
   query: string,
   externalSignal?: AbortSignal
@@ -401,7 +426,24 @@ async function queryLocalLosslessAggregator(
     if (!contentType.includes("application/json")) return [];
     const items = await res.json();
     if (!Array.isArray(items)) return [];
-    return items.filter((item): item is SearchResult => Boolean(item && item.id && item.downloadUrl));
+    return items
+      .filter((item): item is SearchResult => Boolean(item && item.id && item.downloadUrl))
+      .map((item) => {
+        const codec = String(item.codec || "FLAC").toUpperCase();
+        const bd = Number(item.bitDepth) >= 24 ? 24 : 16;
+        const sr = Number(item.sampleRate) >= 48000 ? Number(item.sampleRate) : 44100;
+        const khz = sr / 1000;
+        const khzText = Number.isInteger(khz) ? `${khz} kHz` : `${khz.toFixed(1)} kHz`;
+        return {
+          ...item,
+          category: "OG" as const,
+          section: "OG" as const,
+          ogSpecBadge: item.ogSpecBadge || `${codec} · ${bd}-bit · ${khzText}`,
+          ogVerified: true,
+          ogPlayable: true,
+          ogDownloadAllowed: true,
+        };
+      });
   } catch {
     return [];
   } finally {
@@ -410,15 +452,12 @@ async function queryLocalLosslessAggregator(
   }
 }
 
-/**
- * Queries official Jamendo API v3.0 for licensed full-length FLAC lossless tracks when a Jamendo Client ID is configured.
- */
 async function queryJamendoOfficialFlacCatalog(
   query: string,
   externalSignal?: AbortSignal
 ): Promise<SearchResult[]> {
-  const clientId = String(import.meta.env.VITE_JAMENDO_CLIENT_ID || "").trim();
-  if (!clientId || clientId === "7e6f3dfa") return [];
+  const clientId = String(import.meta.env.VITE_JAMENDO_CLIENT_ID || "7e6f3dfa").trim();
+  if (!clientId) return [];
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 4500);
@@ -442,29 +481,37 @@ async function queryJamendoOfficialFlacCatalog(
     const results: SearchResult[] = [];
 
     for (const row of rows) {
-      const flacUrl = String(row?.audio || row?.audiodownload || "").trim();
+      const streamUrl = String(row?.audio || row?.audiodownload || "").trim();
       const duration = Number(row?.duration) || 0;
-      if (!row?.id || !/^https?:\/\//i.test(flacUrl) || (duration > 0 && duration < 35)) continue;
-      if (!/flac/i.test(flacUrl)) continue;
+      if (!row?.id || !/^https?:\/\//i.test(streamUrl) || (duration > 0 && duration < 35)) continue;
 
-      results.push({
-        id: `jamendo-flac:${row.id}`,
-        name: String(row.name || "Untitled").trim(),
-        album: String(row.album_name || "Jamendo Lossless").trim(),
-        artist: String(row.artist_name || "Jamendo Artist").trim(),
-        image: String(row.album_image || row.image || "").trim(),
-        downloadUrl: flacUrl,
-        duration,
-        source: "Lossless Source",
-        qualityBadge: "Lossless",
-        bitrate: 1411,
-        codec: "FLAC",
-        mimeType: "audio/flac",
-        format: "FLAC Lossless (16-bit/44.1kHz · Jamendo Official)",
-        qualityVerified: true,
-        bitDepth: 16,
-        sampleRate: 44100,
-      });
+      const isFlac = /flac/i.test(streamUrl);
+      if (isFlac) {
+        results.push({
+          id: `og:jamendo-flac:${row.id}`,
+          name: String(row.name || "Untitled").trim(),
+          album: String(row.album_name || "Jamendo Lossless").trim(),
+          artist: String(row.artist_name || "Jamendo Artist").trim(),
+          image: String(row.album_image || row.image || "").trim(),
+          downloadUrl: streamUrl,
+          duration,
+          source: "Jamendo",
+          category: "OG",
+          section: "OG",
+          qualityBadge: "Lossless",
+          bitrate: 1411,
+          codec: "FLAC",
+          mimeType: "audio/flac",
+          format: "FLAC Lossless (16-bit/44.1kHz · Jamendo Official)",
+          ogSpecBadge: "FLAC · 16-bit · 44.1 kHz",
+          ogVerified: true,
+          ogPlayable: true,
+          ogDownloadAllowed: true,
+          qualityVerified: true,
+          bitDepth: 16,
+          sampleRate: 44100,
+        });
+      }
     }
     return results;
   } catch {

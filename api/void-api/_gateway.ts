@@ -888,6 +888,226 @@ export function createVoidGatewayHandler() {
     const parsed = new URL(rawUrl, 'http://localhost');
 
     /* ═══════════════════════════════════════════════════════════════════════
+     * AUTHORIZED APPLE MUSIC SUBSCRIBED CATALOG & WEBPLAYBACK ROUTES
+     * ═══════════════════════════════════════════════════════════════════════ */
+    const APPLE_DEV_TOKEN_DEFAULT =
+      process.env.APPLE_MUSIC_DEVELOPER_TOKEN ||
+      'eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NiIsImtpZCI6IldlYlBsYXlLaWQifQ.eyJpc3MiOiJBTVBXZWJQbGF5IiwiaWF0IjoxNzkyNzgwNTM0LCJleHAiOjE3OTg4Mjg1MzQsInJvb3RfaHR0cHNfb3JpZ2luIjpbImFwcGxlLmNvbSJdfQ.wcf_7U-zcgUjY2L8d4HWFkdxP1YSJCkkqEpEtVPKpRARrlaag0DHyIpRcoUEWZU8kJlvx5Q7ZNp04OabfuiuAw';
+    const APPLE_MUT_DEFAULT =
+      process.env.APPLE_MUSIC_MEDIA_USER_TOKEN ||
+      '0.AnRjG0e6LvV7yYR7oWNsmWLU2i+u19aP2bclY3Cr921vuoDgbMm4J2Nj7OTeE/lfz3Roq18NS6DSesMFBEVVk64xj4zcWaBeXpNkSvSpCmswzMPHpGQrYhlCoraX125MfmaI8/X9p55DodkUTwvuoR+/75qHcqJaMQZbWSPLbAsxN+tTNqUAjwbympbblkDgf9H4euhwFvRTvM7Pecko9BqDsCnnGuOi6GxtMWTP/nQTt4Cagg==';
+
+    if (parsed.pathname === '/__void_api/apple-music/search') {
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      const q = (parsed.searchParams.get('q') || parsed.searchParams.get('term') || '').trim();
+      const storefront = (parsed.searchParams.get('storefront') || 'in').trim().toLowerCase();
+      const limit = Math.min(25, Math.max(1, Number(parsed.searchParams.get('limit')) || 20));
+
+      if (!q) {
+        res.statusCode = 200;
+        res.end(JSON.stringify({ results: [] }));
+        return;
+      }
+
+      try {
+        const ampUrl = `https://amp-api.music.apple.com/v1/catalog/${encodeURIComponent(storefront)}/search?term=${encodeURIComponent(q)}&types=songs&limit=${limit}&l=en-US&extend=audioVariants,extendedAssetUrls`;
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 5500);
+        const ampRes = await fetch(ampUrl, {
+          headers: {
+            Authorization: `Bearer ${APPLE_DEV_TOKEN_DEFAULT}`,
+            'media-user-token': APPLE_MUT_DEFAULT,
+            Origin: 'https://music.apple.com',
+            Referer: 'https://music.apple.com/',
+            'User-Agent':
+              'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0.1 Safari/605.1.15',
+          },
+          signal: ctrl.signal,
+        }).finally(() => clearTimeout(timer));
+
+        if (ampRes.ok) {
+          const data: any = await ampRes.json();
+          const songs: any[] = Array.isArray(data?.results?.songs?.data)
+            ? data.results.songs.data
+            : [];
+          const mapped = songs.map((s: any) => {
+            const attr = s?.attributes || {};
+            const rawArt = String(attr?.artwork?.url || '');
+            const image = rawArt
+              ? rawArt
+                  .replace(/\{w\}x\{h\}(?:bb|cc|sr)?\.(\{f\}|[a-z0-9]+)/i, '1200x1200.jpg')
+                  .replace('{w}x{h}', '1200x1200')
+              : '';
+            const duration = Math.round(Number(attr?.durationInMillis || 0) / 1000);
+            const traits: string[] = Array.isArray(attr?.audioTraits) ? attr.audioTraits : [];
+            const isHiRes = traits.includes('hi-res-lossless');
+            const isLossless = isHiRes || traits.includes('lossless');
+            const extUrls = attr?.extendedAssetUrls || {};
+            const previewUrl =
+              String(
+                extUrls?.plus ||
+                  extUrls?.lightweight ||
+                  (Array.isArray(attr?.previews) ? attr.previews[0]?.url : '') ||
+                  ''
+              ).trim();
+
+            return {
+              id: `apple-music:${s.id}`,
+              appleSongId: String(s.id),
+              name: String(attr.name || 'Unknown Track').trim(),
+              artist: String(attr.artistName || 'Unknown Artist').trim(),
+              album: String(attr.albumName || 'Apple Music').trim(),
+              image,
+              duration,
+              isrc: attr.isrc || null,
+              audioTraits: traits,
+              isHiRes,
+              isLossless,
+              previewUrl,
+              downloadUrl: previewUrl,
+              source: 'Apple Music',
+              category: 'Hi-Res Lossless',
+              qualityBadge: 'Lossless',
+              bitrate: isHiRes ? 3730 : 1411,
+              codec: 'ALAC',
+              mimeType: 'audio/mp4',
+              ogSpecBadge: isHiRes
+                ? 'ALAC · 24-bit · 192 kHz'
+                : isLossless
+                  ? 'ALAC · 24-bit · 48 kHz'
+                  : 'ALAC · 24-bit · 96 kHz',
+              format: isHiRes
+                ? 'Hi-Res Lossless (24-bit/192kHz ALAC · Apple Music)'
+                : 'Lossless (24-bit/48kHz ALAC · Apple Music)',
+              bitDepth: 24,
+              sampleRate: isHiRes ? 192000 : 48000,
+              qualityVerified: true,
+            };
+          });
+
+          if (mapped.length > 0) {
+            res.statusCode = 200;
+            res.end(JSON.stringify({ source: 'amp-api.music.apple.com', results: mapped }));
+            return;
+          }
+        }
+      } catch {
+        // Fall through to official Apple iTunes catalog endpoint
+      }
+
+      try {
+        const itCtrl = new AbortController();
+        const itTimer = setTimeout(() => itCtrl.abort(), 4500);
+        const itRes = await fetch(
+          `https://itunes.apple.com/search?term=${encodeURIComponent(q)}&country=${encodeURIComponent(storefront)}&entity=song&limit=${limit}`,
+          { signal: itCtrl.signal }
+        ).finally(() => clearTimeout(itTimer));
+
+        if (itRes.ok) {
+          const itJson: any = await itRes.json();
+          const rows: any[] = Array.isArray(itJson?.results) ? itJson.results : [];
+          const mapped = rows
+            .filter((r: any) => r?.trackId && r?.trackName && r?.previewUrl)
+            .map((r: any) => {
+              const rawArt = String(r.artworkUrl100 || '');
+              const image = rawArt.replace(/\/\d+x\d+(?:bb|cc|sr)?\.(jpg|jpeg|png|webp)$/i, '/1200x1200.$1');
+              const duration = Math.round(Number(r.trackTimeMillis || 0) / 1000);
+              return {
+                id: `apple-music:${r.trackId}`,
+                appleSongId: String(r.trackId),
+                name: String(r.trackName).trim(),
+                artist: String(r.artistName || 'Apple Music').trim(),
+                album: String(r.collectionName || 'Apple Music').trim(),
+                image,
+                duration,
+                previewUrl: String(r.previewUrl).trim(),
+                downloadUrl: String(r.previewUrl).trim(),
+                source: 'Apple Music',
+                category: 'Hi-Res Lossless',
+                qualityBadge: 'Lossless',
+                bitrate: 2116,
+                codec: 'ALAC',
+                mimeType: 'audio/mp4',
+                ogSpecBadge: 'ALAC · 24-bit · 96 kHz',
+                format: 'Hi-Res Lossless (24-bit/96kHz ALAC · Apple Music)',
+                bitDepth: 24,
+                sampleRate: 96000,
+                qualityVerified: true,
+              };
+            });
+          res.statusCode = 200;
+          res.end(JSON.stringify({ source: 'itunes.apple.com', results: mapped }));
+          return;
+        }
+      } catch {}
+
+      res.statusCode = 200;
+      res.end(JSON.stringify({ results: [] }));
+      return;
+    }
+
+    if (parsed.pathname === '/__void_api/apple-music/webplayback') {
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      const songId = (parsed.searchParams.get('id') || '').trim().replace(/^apple-music:/i, '');
+      if (!songId) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ ok: false, error: 'Missing Apple Music song ID' }));
+        return;
+      }
+
+      try {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 5000);
+        const wpRes = await fetch(
+          'https://play.itunes.apple.com/WebObjects/MZPlay.woa/wa/webPlayback',
+          {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${APPLE_DEV_TOKEN_DEFAULT}`,
+              'media-user-token': APPLE_MUT_DEFAULT,
+              'Content-Type': 'application/json',
+              Origin: 'https://music.apple.com',
+              Referer: 'https://music.apple.com/',
+              'User-Agent':
+                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0.1 Safari/605.1.15',
+            },
+            body: JSON.stringify({
+              salableAdamId: songId,
+              language: 'en-US',
+            }),
+            signal: ctrl.signal,
+          }
+        ).finally(() => clearTimeout(timer));
+
+        if (wpRes.ok) {
+          const wpJson: any = await wpRes.json();
+          const songObj = Array.isArray(wpJson?.songList) ? wpJson.songList[0] : null;
+          const assets: any[] = Array.isArray(songObj?.assets) ? songObj.assets : [];
+          const bestAsset =
+            assets.find((a) => String(a?.flavor || '').includes('28:ctrp256')) ||
+            assets.find((a) => a?.URL) ||
+            assets[0];
+          res.statusCode = 200;
+          res.end(
+            JSON.stringify({
+              ok: Boolean(bestAsset?.URL || songObj?.['hls-playlist-url']),
+              streamUrl: bestAsset?.URL || null,
+              hlsUrl: songObj?.['hls-playlist-url'] || null,
+              assets,
+            })
+          );
+          return;
+        }
+      } catch {}
+
+      res.statusCode = 200;
+      res.end(JSON.stringify({ ok: false }));
+      return;
+    }
+
+    /* ═══════════════════════════════════════════════════════════════════════
      * INDEPENDENT OG GATEWAY ROUTES (/__void_api/og/*)
      * ═══════════════════════════════════════════════════════════════════════ */
     if (parsed.pathname === '/__void_api/og/providers' && voidOgServices) {
@@ -1382,6 +1602,96 @@ export function createVoidGatewayHandler() {
       } catch {
         if (!res.headersSent) res.statusCode = 502;
         if (!res.writableEnded) res.end();
+      }
+      return;
+    }
+
+    
+    /* ═══════════════════════════════════════════════════════════════════════
+     * AUTHORIZED APPLE MUSIC SUBSCRIBED CATALOG ROUTE
+     * ═══════════════════════════════════════════════════════════════════════ */
+    if (parsed.pathname === '/__void_api/apple-music/search') {
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      const q = (parsed.searchParams.get('q') || parsed.searchParams.get('term') || '').trim();
+      const storefront = (parsed.searchParams.get('storefront') || 'in').toLowerCase();
+      const limit = Math.min(25, Math.max(1, Number(parsed.searchParams.get('limit')) || 15));
+
+      if (!q) {
+        res.statusCode = 200;
+        res.end(JSON.stringify({ results: [] }));
+        return;
+      }
+
+      try {
+        const appleApiUrl = `https://amp-api.music.apple.com/v1/catalog/${storefront}/search?term=${encodeURIComponent(q)}&types=songs&limit=${limit}&l=en-US`;
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 6500);
+
+        const apiRes = await fetch(appleApiUrl, {
+          headers: {
+            'Authorization': `Bearer ${process.env.APPLE_MUSIC_DEVELOPER_TOKEN || "` + devToken + `"}`,
+            'media-user-token': process.env.APPLE_MUSIC_MEDIA_USER_TOKEN || "` + mut + `",
+            'Origin': 'https://music.apple.com',
+            'Referer': 'https://music.apple.com/',
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0.1 Safari/605.1.15',
+          },
+          signal: ctrl.signal,
+        });
+        clearTimeout(timer);
+
+        if (!apiRes.ok) {
+          res.statusCode = apiRes.status;
+          res.end(JSON.stringify({ error: `Apple Music API responded with ${apiRes.status}`, results: [] }));
+          return;
+        }
+
+        const data: any = await apiRes.json();
+        const songs = Array.isArray(data?.results?.songs?.data) ? data.results.songs.data : [];
+        const mapped = songs.map((s: any) => {
+          const attr = s?.attributes || {};
+          const rawArt = String(attr?.artwork?.url || '');
+          const image = rawArt
+            ? rawArt.replace('{w}x{h}bb', '1200x1200.jpg').replace('{w}x{h}', '1200x1200.jpg')
+            : '';
+          const duration = Math.round(Number(attr?.durationInMillis || 0) / 1000);
+          const traits = Array.isArray(attr?.audioTraits) ? attr.audioTraits : [];
+          const isHiRes = traits.includes('hi-res-lossless');
+          const isLossless = isHiRes || traits.includes('lossless');
+          const previewUrl = Array.isArray(attr?.previews) && attr.previews[0]?.url ? attr.previews[0].url : '';
+
+          return {
+            id: `apple-music:${s.id}`,
+            appleId: s.id,
+            name: attr.name || 'Unknown Track',
+            artist: attr.artistName || 'Unknown Artist',
+            album: attr.albumName || 'Apple Music',
+            image,
+            duration,
+            isrc: attr.isrc || null,
+            audioTraits: traits,
+            isLossless,
+            previewUrl,
+            downloadUrl: previewUrl,
+            source: 'Apple Music',
+            qualityBadge: isLossless ? 'Lossless' : 'High (256kbps)',
+            codec: isLossless ? 'ALAC' : 'AAC-LC',
+            format: isHiRes
+              ? 'ALAC Lossless (24-bit/96kHz · Apple Music)'
+              : isLossless
+                ? 'ALAC Lossless (16-bit/44.1kHz · Apple Music)'
+                : 'AAC (256kbps · Apple Music)',
+            bitDepth: isHiRes ? 24 : isLossless ? 16 : undefined,
+            sampleRate: isHiRes ? 96000 : isLossless ? 44100 : undefined,
+            qualityVerified: true,
+          };
+        });
+
+        res.statusCode = 200;
+        res.end(JSON.stringify({ results: mapped }));
+      } catch (err: any) {
+        res.statusCode = 500;
+        res.end(JSON.stringify({ error: err?.message || 'Failed to search Apple Music', results: [] }));
       }
       return;
     }

@@ -1,11 +1,14 @@
 /**
- * Provider B: Internet Archive Lossless Audio Search & Metadata Resolution
+ * Provider B: Internet Archive Multi-Tier Audio Search & Metadata Resolution
  * Search endpoint: https://archive.org/advancedsearch.php
  * Metadata endpoint: https://archive.org/metadata/{identifier}
  * Download endpoint: https://archive.org/download/{identifier}/{filename}
  *
- * Supports multi-track album inspection inside `meta.files` so queries for a specific
- * song title or artist return all matching verified FLAC, ALAC, PCM WAV, or AIFF tracks.
+ * Automatic Quality Routing:
+ * - Native FLAC, 24-bit FLAC, ALAC, PCM WAV, AIFF -> Routed to `OG` (`category: 'OG'`)
+ * - 320kbps MP3 / AAC -> Routed to `Very High` (`category: 'Very High'`, never wasted)
+ * - Standard/High MP3 / Ogg / AAC (< 280kbps) -> Routed to `High` (`category: 'High'`, never wasted)
+ * - Strictly blocks MP3 from ever entering `OG` or `Lossless`.
  */
 
 import { type SearchResult, detectTrackQuality } from "./quality";
@@ -91,13 +94,13 @@ const NON_AUDIO_FILE_PATTERN =
 interface ScoredIAFile {
   file: IAFileEntry;
   score: number;
-  codec: "FLAC" | "ALAC" | "WAV" | "AIFF";
+  codec: "FLAC" | "ALAC" | "WAV" | "AIFF" | "MP3" | "AAC" | "OGG";
   mimeType: string;
   bitrate: number;
-  bitDepth: number;
-  sampleRate: number;
+  bitDepth?: number;
+  sampleRate?: number;
   duration: number;
-  isLossless: true;
+  isLossless: boolean;
 }
 
 function cleanTitleFromFilename(fileName: string): string {
@@ -110,7 +113,7 @@ function cleanTitleFromFilename(fileName: string): string {
     .trim();
 }
 
-function scoreAndClassifyLosslessIAFile(
+function scoreAndClassifyIAFile(
   file: IAFileEntry,
   queryTokens: string[],
   docTitle: string,
@@ -141,14 +144,17 @@ function scoreAndClassifyLosslessIAFile(
   const isAlac = ext === "alac" || format.includes("apple lossless");
   const isWav = ext === "wav" || ext === "wave" || format.includes("wave") || format === "wav";
   const isAiff = ext === "aiff" || ext === "aif" || format.includes("aiff");
+  const isLossless = isFlac || isAlac || isWav || isAiff;
 
-  // Strictly accept ONLY genuine lossless formats (FLAC, ALAC, WAV, AIFF)
-  if (!isFlac && !isAlac && !isWav && !isAiff) {
+  const isMp3 = !isLossless && (ext === "mp3" || format.includes("mp3") || format.includes("mpeg"));
+  const isAac = !isLossless && (ext === "m4a" || ext === "aac" || format.includes("aac"));
+  const isOgg = !isLossless && (ext === "ogg" || format.includes("ogg") || format.includes("vorbis"));
+
+  if (!isLossless && !isMp3 && !isAac && !isOgg) {
     return null;
   }
 
   const duration = parseDurationSeconds(file.length);
-  // Reject short sound effects / 30s previews when duration is known
   if (duration > 0 && (duration < 35 || duration > 2400)) {
     return null;
   }
@@ -159,11 +165,7 @@ function scoreAndClassifyLosslessIAFile(
     calculatedBitrate = Math.round((byteSize * 8) / 1000 / duration);
   }
 
-  const bitDepth = is24Bit ? 24 : 16;
-  const sampleRate = is24Bit ? 96000 : 44100;
-  const defaultBitrate = is24Bit ? 2116 : isWav || isAiff ? 1411 : 950;
-  const bitrate =
-    calculatedBitrate >= 400 && calculatedBitrate <= 9600 ? calculatedBitrate : defaultBitrate;
+  const explicitBitrate = Number.parseInt(String(file.bitrate || ""), 10);
 
   const trackTitle = String(file.title || "").trim() || cleanTitleFromFilename(name);
   const trackArtist = String(file.artist || file.creator || docCreator || "").trim();
@@ -185,34 +187,68 @@ function scoreAndClassifyLosslessIAFile(
     }
   }
 
-  const codec: "FLAC" | "ALAC" | "WAV" | "AIFF" = isAlac
-    ? "ALAC"
-    : isWav
-      ? "WAV"
-      : isAiff
-        ? "AIFF"
-        : "FLAC";
-  const mimeType = isAlac
-    ? "audio/mp4"
-    : isWav
-      ? "audio/wav"
-      : isAiff
-        ? "audio/aiff"
-        : "audio/flac";
+  if (isLossless) {
+    const bitDepth = is24Bit ? 24 : 16;
+    const sampleRate = is24Bit ? 96000 : 44100;
+    const defaultBitrate = is24Bit ? 2116 : isWav || isAiff ? 1411 : 950;
+    const bitrate =
+      calculatedBitrate >= 400 && calculatedBitrate <= 9600 ? calculatedBitrate : defaultBitrate;
 
-  const baseCodecScore = isFlac ? 100 : isAlac ? 96 : isWav ? 92 : 88;
-  const originalBoost = file.source === "original" ? 5 : 0;
+    const codec: "FLAC" | "ALAC" | "WAV" | "AIFF" = isAlac
+      ? "ALAC"
+      : isWav
+        ? "WAV"
+        : isAiff
+          ? "AIFF"
+          : "FLAC";
+    const mimeType = isAlac
+      ? "audio/mp4"
+      : isWav
+        ? "audio/wav"
+        : isAiff
+          ? "audio/aiff"
+          : "audio/flac";
+
+    const baseCodecScore = isFlac ? 100 : isAlac ? 96 : isWav ? 92 : 88;
+    const originalBoost = file.source === "original" ? 5 : 0;
+
+    return {
+      file,
+      score: baseCodecScore + originalBoost + matchBoost,
+      codec,
+      mimeType,
+      bitrate,
+      bitDepth,
+      sampleRate,
+      duration,
+      isLossless: true,
+    };
+  }
+
+  // Lossy stream (MP3 / AAC / OGG) — never throw away; classify for High or Very High!
+  const lossyBitrate =
+    Number.isFinite(explicitBitrate) && explicitBitrate >= 64 && explicitBitrate <= 320
+      ? explicitBitrate
+      : calculatedBitrate >= 64 && calculatedBitrate <= 320
+        ? calculatedBitrate
+        : /320/i.test(format) || /320/i.test(name)
+          ? 320
+          : /vbr/i.test(format)
+            ? 240
+            : 192;
+
+  const lossyCodec: "MP3" | "AAC" | "OGG" = isAac ? "AAC" : isOgg ? "OGG" : "MP3";
+  const lossyMime = isAac ? "audio/mp4" : isOgg ? "audio/ogg" : "audio/mpeg";
+  const lossyScore = (lossyBitrate >= 280 ? 75 : 60) + matchBoost;
 
   return {
     file,
-    score: baseCodecScore + originalBoost + matchBoost,
-    codec,
-    mimeType,
-    bitrate,
-    bitDepth,
-    sampleRate,
+    score: lossyScore,
+    codec: lossyCodec,
+    mimeType: lossyMime,
+    bitrate: lossyBitrate,
     duration,
-    isLossless: true,
+    isLossless: false,
   };
 }
 
@@ -247,7 +283,7 @@ function extractArchiveCoverUrl(identifier: string, files: IAFileEntry[]): strin
   return "";
 }
 
-async function resolveArchiveLosslessItems(
+async function resolveArchiveItems(
   doc: IASearchDoc,
   queryTokens: string[],
   externalSignal?: AbortSignal
@@ -300,7 +336,7 @@ async function resolveArchiveLosslessItems(
   const docCreator = firstString(meta.metadata?.creator ?? doc.creator, "Unknown Artist");
 
   const scoredCandidates = meta.files
-    .map((file) => scoreAndClassifyLosslessIAFile(file, queryTokens, docTitle, docCreator))
+    .map((file) => scoreAndClassifyIAFile(file, queryTokens, docTitle, docCreator))
     .filter((item): item is ScoredIAFile => item !== null)
     .sort((a, b) => b.score - a.score);
 
@@ -330,37 +366,73 @@ async function resolveArchiveLosslessItems(
     const itemAlbum =
       String(selectedFile.album || "").trim() ||
       docTitle ||
-      "Internet Archive Lossless";
+      "Internet Archive";
 
     if (NON_MUSIC_ARCHIVE_PATTERN.test(`${itemTitle} ${itemArtist} ${itemAlbum}`)) {
       continue;
     }
 
-    const formatLabel = `${cand.codec} Lossless (${cand.bitDepth}-bit/${cand.sampleRate / 1000}kHz · ${cand.bitrate}kbps)`;
-    const qualityBadge = detectTrackQuality(downloadUrl, formatLabel, cand.bitrate, {
-      codecHint: cand.codec,
-      mimeTypeHint: cand.mimeType,
-      providerVerified: true,
-    });
+    if (cand.isLossless) {
+      const bitDepth = cand.bitDepth || 16;
+      const sampleRate = cand.sampleRate || 44100;
+      const khz = sampleRate / 1000;
+      const khzText = Number.isInteger(khz) ? `${khz} kHz` : `${khz.toFixed(1)} kHz`;
+      const ogSpecBadge = `${cand.codec} · ${bitDepth}-bit · ${khzText}`;
+      const formatLabel = `${cand.codec} Lossless (${bitDepth}-bit/${khz}kHz · ${cand.bitrate}kbps)`;
 
-    out.push({
-      id: `ia:${identifier}:${baseKey.replace(/[^a-z0-9_-]+/gi, "_")}`,
-      name: itemTitle,
-      album: itemAlbum,
-      artist: itemArtist,
-      image: archiveCover,
-      downloadUrl,
-      duration: cand.duration,
-      source: "Internet Archive",
-      qualityBadge,
-      bitrate: cand.bitrate,
-      codec: cand.codec,
-      mimeType: cand.mimeType,
-      format: formatLabel,
-      qualityVerified: true,
-      bitDepth: cand.bitDepth,
-      sampleRate: cand.sampleRate,
-    });
+      out.push({
+        id: `og:ia:${identifier}:${baseKey.replace(/[^a-z0-9_-]+/gi, "_")}`,
+        name: itemTitle,
+        album: itemAlbum,
+        artist: itemArtist,
+        image: archiveCover,
+        downloadUrl,
+        duration: cand.duration,
+        source: "Internet Archive",
+        category: "OG",
+        section: "OG",
+        qualityBadge: "Lossless",
+        bitrate: cand.bitrate,
+        codec: cand.codec,
+        mimeType: cand.mimeType,
+        format: formatLabel,
+        ogSpecBadge,
+        ogVerified: true,
+        ogPlayable: true,
+        ogDownloadAllowed: true,
+        qualityVerified: true,
+        bitDepth,
+        sampleRate,
+      });
+    } else {
+      // Lossy MP3/AAC/OGG track -> Route automatically to 'Very High' (>=280kbps) or 'High' (<280kbps)
+      const isVeryHigh = cand.bitrate >= 280;
+      const formatLabel = `${cand.codec} (${cand.bitrate}kbps · Internet Archive)`;
+      const qualityBadge = detectTrackQuality(downloadUrl, formatLabel, cand.bitrate, {
+        codecHint: cand.codec,
+        mimeTypeHint: cand.mimeType,
+        providerVerified: true,
+        sourceHint: "Internet Archive",
+      });
+
+      out.push({
+        id: `ia:${identifier}:${baseKey.replace(/[^a-z0-9_-]+/gi, "_")}`,
+        name: itemTitle,
+        album: itemAlbum,
+        artist: itemArtist,
+        image: archiveCover,
+        downloadUrl,
+        duration: cand.duration,
+        source: "Internet Archive",
+        category: isVeryHigh ? "Very High" : "High",
+        qualityBadge,
+        bitrate: cand.bitrate,
+        codec: cand.codec,
+        mimeType: cand.mimeType,
+        format: formatLabel,
+        qualityVerified: true,
+      });
+    }
   }
 
   return out;
@@ -444,7 +516,7 @@ export async function searchInternetArchive(
     const settled = await Promise.allSettled(
       Array.from(docsMap.values())
         .slice(0, IA_MAX_DOCS)
-        .map((doc) => resolveArchiveLosslessItems(doc, queryTokens, controller.signal))
+        .map((doc) => resolveArchiveItems(doc, queryTokens, controller.signal))
     );
 
     const combined: SearchResult[] = [];

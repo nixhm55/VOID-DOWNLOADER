@@ -4,8 +4,7 @@
  * Strictly enforces provider priority order & 4-section category routing:
  * - "High": JioSaavn (#1 priority), Jamendo (#2), YouTube (#3), and remaining open APIs (#4)
  * - "Very High": Spotify (`searchSpotifyTracks`)
- * - "Lossless": Apple Music (`searchAppleMusicTracks`)
- * - "OG": Independent 4-Stage Verified Genuine Lossless (`searchOgSection`)
+ * - "Lossless": Genuine Verified Lossless
  */
 
 import { searchJioSaavn } from "./musicApi";
@@ -15,7 +14,6 @@ import { searchRadioBrowser } from "./radioBrowserApi";
 import { searchThirdPartyLossless } from "./losslessGatewayApi";
 import { searchYouTube } from "./youtubeApi";
 import { searchAppleMusicTracks, searchSpotifyTracks } from "./spotifyAndAppleApi";
-import { searchOgSection } from "./ogApi";
 import {
   type SearchResult,
   deduplicateAndSortSearchResults,
@@ -44,7 +42,6 @@ export const PROVIDERS: readonly ProviderDescriptor[] = [
   { name: "YouTube", run: searchYouTube },
   { name: "Spotify", run: searchSpotifyTracks },
   { name: "Apple Music", run: searchAppleMusicTracks },
-  { name: "OG Verified Lossless", run: searchOgSection },
   { name: "Third-Party Lossless Gateway", run: searchThirdPartyLossless },
   { name: "Internet Archive", run: searchInternetArchive },
   { name: "Radio Browser", run: searchRadioBrowser },

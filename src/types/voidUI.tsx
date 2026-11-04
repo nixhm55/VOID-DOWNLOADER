@@ -208,17 +208,17 @@ export function formatMinimalArtist(rawArtist?: string): string {
 }
 
 /**
- * Four required sections:
+ * Four quality sections:
  * 1. High
  * 2. Very High
  * 3. Lossless
- * 4. OG (Displayed as exact uppercase "OG")
+ * 4. Hi-Res Lossless (All Apple Music tracks)
  */
 export const SEARCH_CATEGORIES: readonly SearchCategory[] = [
   'High',
   'Very High',
   'Lossless',
-  'OG',
+  'Hi-Res Lossless',
 ] as const;
 
 export function SearchCategoryTabs({

@@ -14,10 +14,9 @@ import {
   type SearchResult,
 } from '@/api/quality';
 import {
-  isEligibleOgTrack,
-  verifyOgBinaryHeaderBytes,
-  verifyOgTrackAtPlaybackTime,
-} from '@/api/ogApi';
+  APPLE_DEV_TOKEN,
+  APPLE_MEDIA_USER_TOKEN,
+} from '@/api/spotifyAndAppleApi';
 import { searchAllProviders } from '@/api/unifiedSearch';
 import {
   extractYouTubeIdFromTrack,
@@ -32,15 +31,85 @@ import { DesktopUI } from '@/desktop';
 import { MobileUI } from '@/mobile';
 import { prepareDownloadArtwork } from '@/song-cover/downloadCoverArtwork';
 import {
-  convertAudioBlobToAlacM4a,
   embedMetadataAndCoverIntoAudio,
-  probeAudioBlob,
 } from '@/song-cover/embedAudioMetadata';
 import { putVoidDownload } from '@/song-cover/downloadsDb';
 import type { VoidUIProps } from '@/types/voidUI';
 
 export interface AppProps {
   readonly children?: ReactNode;
+}
+
+let appleMusicKitPromise: Promise<any> | null = null;
+function loadAppleMusicKit(): Promise<any> {
+  if (typeof window === 'undefined') return Promise.resolve(null);
+  const w = window as any;
+
+  const initInstance = async (MK: any) => {
+    try {
+      if (APPLE_MEDIA_USER_TOKEN) {
+        try {
+          localStorage.setItem('music.ampwebplay.media-user-token', APPLE_MEDIA_USER_TOKEN);
+          localStorage.setItem('music.all.media-user-token', APPLE_MEDIA_USER_TOKEN);
+        } catch {}
+      }
+      try {
+        const existing = MK.getInstance?.();
+        if (existing) {
+          if (APPLE_MEDIA_USER_TOKEN && !existing.musicUserToken) {
+            existing.musicUserToken = APPLE_MEDIA_USER_TOKEN;
+          }
+          return existing;
+        }
+      } catch {}
+      const instance = await MK.configure({
+        developerToken: APPLE_DEV_TOKEN,
+        app: {
+          name: 'VOID Music Player',
+          build: '1.0.0',
+        },
+        bitrate: 256,
+      });
+      if (instance && APPLE_MEDIA_USER_TOKEN) {
+        try {
+          instance.musicUserToken = APPLE_MEDIA_USER_TOKEN;
+        } catch {}
+      }
+      return instance || MK.getInstance?.() || null;
+    } catch {
+      return null;
+    }
+  };
+
+  if (w.MusicKit) {
+    return initInstance(w.MusicKit);
+  }
+  if (appleMusicKitPromise) return appleMusicKitPromise;
+
+  appleMusicKitPromise = new Promise((resolve) => {
+    const onLoaded = () => {
+      document.removeEventListener('musickitloaded', onLoaded);
+      void initInstance(w.MusicKit).then(resolve);
+    };
+    document.addEventListener('musickitloaded', onLoaded);
+    const tag = document.createElement('script');
+    tag.src = 'https://js-cdn.music.apple.com/musickit/v3/musickit.js';
+    tag.async = true;
+    tag.crossOrigin = 'anonymous';
+    tag.onload = () => {
+      if (w.MusicKit) {
+        document.removeEventListener('musickitloaded', onLoaded);
+        void initInstance(w.MusicKit).then(resolve);
+      }
+    };
+    tag.onerror = () => {
+      document.removeEventListener('musickitloaded', onLoaded);
+      appleMusicKitPromise = null;
+      resolve(null);
+    };
+    document.head.appendChild(tag);
+  });
+  return appleMusicKitPromise;
 }
 
 let ytApiPromise: Promise<any> | null = null;
@@ -93,30 +162,25 @@ async function resolveTrackStreamCandidates(
 ): Promise<string[]> {
   const cat = getTrackSearchCategory(item);
 
-  // CRITICAL OG ISOLATION: OG tracks only use their verified lossless stream URL — never fallbacks
-  if (cat === 'OG') {
-    if (!isEligibleOgTrack(item)) return [];
-    const check = await verifyOgTrackAtPlaybackTime(item);
-    if (!check.eligible || !check.streamUrl) return [];
-    return [check.streamUrl, item.downloadUrl].filter(Boolean);
-  }
-
-  const isLosslessCategory = cat === 'Lossless';
-  if (isLosslessCategory) {
+  if (cat === 'Lossless' || cat === 'Hi-Res Lossless') {
     const ordered = forDownload
       ? [
           item.downloadUrl,
           ...(Array.isArray(item.fallbackUrls) ? item.fallbackUrls : []),
         ]
       : [
-          ...(Array.isArray(item.fallbackUrls) ? item.fallbackUrls : []),
           item.downloadUrl,
+          ...(Array.isArray(item.fallbackUrls) ? item.fallbackUrls : []),
         ];
     return Array.from(
       new Set(
         ordered.filter(
           (u): u is string =>
-            Boolean(u && !u.startsWith('yt-stream://') && !u.includes('void-backend')),
+            Boolean(
+              u &&
+                !u.startsWith('yt-stream://') &&
+                !u.includes('void-backend'),
+            ),
         ),
       ),
     );
@@ -224,6 +288,8 @@ export function App({ children }: AppProps): JSX.Element {
   const ytAudioPlayerRef = useRef<any>(null);
   const ytActiveRef = useRef(false);
   const ytVideoIdRef = useRef<string | null>(null);
+  const mkPlayerRef = useRef<any>(null);
+  const mkActiveRef = useRef(false);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
@@ -285,6 +351,9 @@ export function App({ children }: AppProps): JSX.Element {
 
   useEffect(() => {
     void loadYouTubeIframeApi().catch(() => {});
+    void loadAppleMusicKit().then((mk) => {
+      if (mk) mkPlayerRef.current = mk;
+    });
   }, []);
 
   const voiceOrbRef = useRef<LiquidGlassOrbHandle>(null);
@@ -624,7 +693,14 @@ export function App({ children }: AppProps): JSX.Element {
   useEffect(() => {
     if (!isPlayingAudio) return;
     const timer = window.setInterval(() => {
-      if (ytActiveRef.current && ytAudioPlayerRef.current) {
+      if (mkActiveRef.current && mkPlayerRef.current) {
+        try {
+          const cur = Number(mkPlayerRef.current.currentPlaybackTime ?? 0);
+          if (Number.isFinite(cur) && cur >= 0) setPosition(cur);
+          const dur = Number(mkPlayerRef.current.currentPlaybackDuration ?? 0);
+          if (Number.isFinite(dur) && dur > 0) setDuration(dur);
+        } catch {}
+      } else if (ytActiveRef.current && ytAudioPlayerRef.current) {
         try {
           const cur = Number(ytAudioPlayerRef.current.getCurrentTime?.() ?? 0);
           if (Number.isFinite(cur) && cur >= 0) setPosition(cur);
@@ -645,6 +721,11 @@ export function App({ children }: AppProps): JSX.Element {
     if (audioPlayerRef.current) {
       audioPlayerRef.current.volume = volume;
       audioPlayerRef.current.muted = muted;
+    }
+    if (mkPlayerRef.current) {
+      try {
+        mkPlayerRef.current.volume = muted ? 0 : volume;
+      } catch {}
     }
     if (ytAudioPlayerRef.current) {
       try {
@@ -680,7 +761,7 @@ export function App({ children }: AppProps): JSX.Element {
           }
         };
         el.onpause = () => {
-          if (!ytActiveRef.current) setIsPlayingAudio(false);
+          if (!ytActiveRef.current && !mkActiveRef.current) setIsPlayingAudio(false);
         };
         el.onplay = () => setIsPlayingAudio(true);
         el.onloadedmetadata = () => {
@@ -694,6 +775,18 @@ export function App({ children }: AppProps): JSX.Element {
       const audio = audioPlayerRef.current;
 
       if (playingId === key) {
+        if (mkActiveRef.current && mkPlayerRef.current) {
+          try {
+            if (mkPlayerRef.current.isPlaying) {
+              await mkPlayerRef.current.pause?.();
+              setIsPlayingAudio(false);
+            } else {
+              await mkPlayerRef.current.play?.();
+              setIsPlayingAudio(true);
+            }
+          } catch {}
+          return;
+        }
         if (ytActiveRef.current && ytAudioPlayerRef.current) {
           try {
             const state = ytAudioPlayerRef.current.getPlayerState?.();
@@ -719,6 +812,13 @@ export function App({ children }: AppProps): JSX.Element {
         return;
       }
 
+      if (mkActiveRef.current) {
+        mkActiveRef.current = false;
+        try {
+          await mkPlayerRef.current?.pause?.();
+          await mkPlayerRef.current?.stop?.();
+        } catch {}
+      }
       if (ytActiveRef.current) {
         ytActiveRef.current = false;
         try {
@@ -729,74 +829,84 @@ export function App({ children }: AppProps): JSX.Element {
 
       const itemCategory = getTrackSearchCategory(item);
 
-      // STRICT OG PLAYBACK PROTECTION:
-      // Validate eligibility again at playback resolution time; fail closed if unverified or lossy.
-      if (itemCategory === 'OG') {
-        if (!isEligibleOgTrack(item)) {
-          setIsPlayingAudio(false);
-          return;
-        }
-        setActiveTrack(item);
-        setPlayingId(key);
-        setPosition(0);
-        setDuration(item.duration > 0 && Number.isFinite(item.duration) ? item.duration : 0);
-        setIsPlayingAudio(true);
-
-        const verification = await verifyOgTrackAtPlaybackTime(item);
-        if (!verification.eligible || !verification.streamUrl) {
-          setIsPlayingAudio(false);
-          return;
-        }
-
-        const ogUrls = [verification.streamUrl, item.downloadUrl].filter(Boolean);
-        let playedOg = false;
-        for (const ogUrl of ogUrls) {
-          try {
-            audio.src = ogUrl;
-            audio.volume = volumeRef.current.volume;
-            audio.muted = volumeRef.current.muted;
-            await audio.play();
-            setIsPlayingAudio(true);
-            playedOg = true;
-            break;
-          } catch (err) {
-            if (err instanceof DOMException && err.name === 'AbortError') return;
-          }
-        }
-        if (!playedOg) {
-          setIsPlayingAudio(false);
-        }
-        return;
-      }
-
-      // Existing playback pipeline for HIGH, VERY HIGH, and LOSSLESS (100% preserved)
       setActiveTrack(item);
       setPlayingId(key);
       setPosition(0);
       setDuration(item.duration > 0 && Number.isFinite(item.duration) ? item.duration : 0);
       setIsPlayingAudio(true);
 
+      // 100% Pure Apple Music playback for Hi-Res Lossless
+      if (itemCategory === 'Hi-Res Lossless') {
+        const appleSongId = String(item.id || '').replace(/^apple[-_]/i, '').trim();
+        if (/^\d+$/.test(appleSongId)) {
+          try {
+            const mk = mkPlayerRef.current || (await loadAppleMusicKit());
+            if (mk) {
+              mkPlayerRef.current = mk;
+              mk.volume = volumeRef.current.muted ? 0 : volumeRef.current.volume;
+              await mk.setQueue({ song: appleSongId, startPlaying: true });
+              await mk.play();
+              if (mk.isPlaying) {
+                mkActiveRef.current = true;
+                setIsPlayingAudio(true);
+                const mkDur = Number(mk.currentPlaybackDuration ?? 0);
+                if (Number.isFinite(mkDur) && mkDur > 0) setDuration(mkDur);
+                return;
+              }
+            }
+          } catch {
+            mkActiveRef.current = false;
+          }
+
+          try {
+            const wpRes = await fetch(`/__void_api/apple-music/webplayback?id=${encodeURIComponent(appleSongId)}`);
+            if (wpRes.ok) {
+              const wpData = await wpRes.json();
+              const streams = Array.isArray(wpData?.streams) ? wpData.streams : [];
+              const clearStream = streams.find((s: any) => s?.url && !s?.hls_key_cert_url && !s?.key_url);
+              if (clearStream?.url) {
+                audio.src = clearStream.url;
+                audio.volume = volumeRef.current.volume;
+                audio.muted = volumeRef.current.muted;
+                await audio.play();
+                setIsPlayingAudio(true);
+                return;
+              }
+            }
+          } catch {}
+        }
+      }
+
       const rawYtCandidateId = extractYouTubeIdFromTrack(item);
       const isYouTubeTrack =
-        formatProviderLabel(item.source, item) === 'YouTube' ||
-        String(item.downloadUrl || '').startsWith('yt-stream://') ||
-        String(item.downloadUrl || '').includes('void-backend') ||
-        /^[\w-]{11}$/.test(rawYtCandidateId);
+        itemCategory !== 'Lossless' &&
+        itemCategory !== 'Hi-Res Lossless' &&
+        (formatProviderLabel(item.source, item) === 'YouTube' ||
+          String(item.downloadUrl || '').startsWith('yt-stream://') ||
+          String(item.downloadUrl || '').includes('void-backend') ||
+          /^[\w-]{11}$/.test(rawYtCandidateId));
 
-      if (!isYouTubeTrack && /^https?:\/\//i.test(item.downloadUrl)) {
+      if (!isYouTubeTrack && ( /^https?:\/\//i.test(item.downloadUrl) || item.downloadUrl.startsWith('/__void_api/') )) {
         const directCandidates = Array.from(
           new Set(
             [
-              item.qualityUrls?.['very-high'],
-              item.downloadUrl,
-              ...(Array.isArray(item.fallbackUrls) ? item.fallbackUrls : []),
-            ].filter((u): u is string => Boolean(u && /^https?:\/\//i.test(u))),
+              ...(itemCategory === 'Lossless' || itemCategory === 'Hi-Res Lossless'
+                ? [
+                    ...(Array.isArray(item.fallbackUrls) ? item.fallbackUrls : []),
+                    item.downloadUrl,
+                  ]
+                : [
+                    item.qualityUrls?.['very-high'],
+                    item.downloadUrl,
+                    ...(Array.isArray(item.fallbackUrls) ? item.fallbackUrls : []),
+                  ]),
+            ].filter((u): u is string => Boolean(u && (/^https?:\/\//i.test(u) || u.startsWith('/__void_api/')))),
           ),
         );
 
         let playedDirect = false;
         for (const rawUrl of directCandidates) {
-          const tryUrls = rawUrl.includes('saavncdn.com')
+          const tryUrls = rawUrl.startsWith('/__void_api/') || rawUrl.includes('saavncdn.com')
             ? [rawUrl]
             : [rawUrl, `/__void_api/proxy-audio?url=${encodeURIComponent(rawUrl)}`];
           for (const url of tryUrls) {
@@ -972,7 +1082,11 @@ export function App({ children }: AppProps): JSX.Element {
   playRelativeRef.current = playRelative;
 
   const seekTo = useCallback((next: number) => {
-    if (ytActiveRef.current && ytAudioPlayerRef.current) {
+    if (mkActiveRef.current && mkPlayerRef.current) {
+      try {
+        void mkPlayerRef.current.seekToTime?.(next);
+      } catch {}
+    } else if (ytActiveRef.current && ytAudioPlayerRef.current) {
       try {
         ytAudioPlayerRef.current.seekTo?.(next, true);
       } catch {}
@@ -1003,7 +1117,7 @@ export function App({ children }: AppProps): JSX.Element {
 
       try {
         const isOgCategory = cat === 'OG';
-        const isLosslessCategory = cat === 'Lossless';
+        const isLosslessCategory = cat === 'Lossless' || cat === 'Hi-Res Lossless';
         const ytId = extractYouTubeIdFromTrack(item);
         const isYtTrack =
           !isOgCategory &&
@@ -1016,24 +1130,16 @@ export function App({ children }: AppProps): JSX.Element {
         let audioBlob: Blob | null = null;
 
         for (const streamUrl of candidates) {
-          const fetchTargets = isOgCategory
-            ? [
-                streamUrl.startsWith('/__void_api/')
-                  ? streamUrl
-                  : `/__void_api/og/stream?url=${encodeURIComponent(streamUrl)}`,
-                streamUrl,
-              ]
-            : streamUrl.startsWith('/__void_api/')
-              ? [streamUrl]
-              : isLosslessCategory && /^https?:\/\//i.test(streamUrl)
-                ? [
-                    `/__void_api/proxy-audio?url=${encodeURIComponent(streamUrl)}&codec=alac&ext=.m4a`,
-                    `/__void_api/proxy-audio?url=${encodeURIComponent(streamUrl)}`,
-                    streamUrl,
-                  ]
-                : /^https?:\/\//i.test(streamUrl) && !streamUrl.includes('saavncdn.com')
-                  ? [`/__void_api/proxy-audio?url=${encodeURIComponent(streamUrl)}`, streamUrl]
-                  : [streamUrl, `/__void_api/proxy-audio?url=${encodeURIComponent(streamUrl)}`];
+          const fetchTargets = streamUrl.startsWith('/__void_api/')
+            ? [streamUrl]
+            : isLosslessCategory && /^https?:\/\//i.test(streamUrl)
+              ? [
+                  `/__void_api/proxy-audio?url=${encodeURIComponent(streamUrl)}`,
+                  streamUrl,
+                ]
+              : /^https?:\/\//i.test(streamUrl) && !streamUrl.includes('saavncdn.com')
+                ? [`/__void_api/proxy-audio?url=${encodeURIComponent(streamUrl)}`, streamUrl]
+                : [streamUrl, `/__void_api/proxy-audio?url=${encodeURIComponent(streamUrl)}`];
 
           for (const target of fetchTargets) {
             try {
@@ -1042,29 +1148,6 @@ export function App({ children }: AppProps): JSX.Element {
               const blob = await response.blob();
               const bType = String(blob.type || '').toLowerCase();
               if (blob.size > 1024 && !bType.includes('html') && !bType.includes('json')) {
-                if (isOgCategory) {
-                  // Strict binary verification for OG downloads — NEVER transcode lossy to ALAC!
-                  const headerBuf = new Uint8Array(await blob.slice(0, 65536).arrayBuffer());
-                  const ogCheck = verifyOgBinaryHeaderBytes(headerBuf);
-                  if (!ogCheck.valid) {
-                    continue;
-                  }
-                  audioBlob = blob;
-                  break;
-                }
-                if (isLosslessCategory) {
-                  const probe = await probeAudioBlob(blob);
-                  if (probe.isLossless) {
-                    audioBlob = blob;
-                    break;
-                  }
-                  const alacBlob = await convertAudioBlobToAlacM4a(blob);
-                  if (alacBlob) {
-                    audioBlob = alacBlob;
-                    break;
-                  }
-                  continue;
-                }
                 audioBlob = blob;
                 break;
               }

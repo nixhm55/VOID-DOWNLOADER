@@ -62,7 +62,7 @@ export interface SearchResult {
   label?: string;
 
   // OG Genuine Lossless section fields (strictly isolated from High / Very High / Lossless)
-  category?: 'High' | 'Very High' | 'Lossless' | 'OG';
+  category?: 'High' | 'Very High' | 'Lossless' | 'Hi-Res Lossless' | 'OG';
   section?: 'OG';
   isrc?: string | null;
   providerId?: string;
@@ -624,10 +624,21 @@ export function getQualitySortRank(result: Pick<SearchResult, 'qualityBadge' | '
 }
 
 export function compareResultsByQuality(a: SearchResult, b: SearchResult, query?: string): number {
-  // Keep OG tracks sorted by highest native bit-depth & sample rate
   const catA = getTrackSearchCategory(a);
   const catB = getTrackSearchCategory(b);
-  if (catA === 'OG' && catB === 'OG') {
+  const srcA = String(a.source || '').trim().toLowerCase();
+  const srcB = String(b.source || '').trim().toLowerCase();
+
+  if (catA === 'Hi-Res Lossless' && catB === 'Hi-Res Lossless') {
+    return 0;
+  }
+
+  if (catA === 'Lossless' && catB === 'Lossless') {
+    if (query) {
+      const relA = getSearchRelevanceScore(a, query);
+      const relB = getSearchRelevanceScore(b, query);
+      if (relB.tier !== relA.tier) return relB.tier - relA.tier;
+    }
     const bdDiff = (Number(b.bitDepth) || 16) - (Number(a.bitDepth) || 16);
     if (bdDiff !== 0) return bdDiff;
     const srDiff = (Number(b.sampleRate) || 44100) - (Number(a.sampleRate) || 44100);
@@ -639,9 +650,7 @@ export function compareResultsByQuality(a: SearchResult, b: SearchResult, query?
   const rankB = getProviderPriorityRank(b.source, b);
   if (rankA !== rankB) return rankA - rankB;
 
-  const srcA = String(a.source || '').trim().toLowerCase();
-  const srcB = String(b.source || '').trim().toLowerCase();
-  if (rankA === 1 || (srcA === srcB && (srcA === 'apple music' || srcA === 'spotify'))) {
+  if (rankA === 1 || (srcA === srcB && (srcA === 'spotify' || srcA === 'apple music'))) {
     return 0;
   }
 
@@ -972,28 +981,72 @@ export function deduplicateTrackCollection<T extends Record<string, any>>(
 }
 
 /**
- * The four independent quality sections in Void:
+ * The four quality sections in Void:
  * 1. 'High'
  * 2. 'Very High'
  * 3. 'Lossless'
- * 4. 'OG'
+ * 4. 'Hi-Res Lossless' (All Apple Music tracks)
  */
-export type SearchCategory = 'High' | 'Very High' | 'Lossless' | 'OG';
+export type SearchCategory = 'High' | 'Very High' | 'Lossless' | 'Hi-Res Lossless';
 
 /**
- * Maps a track strictly to one of the four UI categories:
- * - OG verified tracks (`category === 'OG'` or `section === 'OG'`) -> 'OG'
- * - Spotify -> 'Very High'
- * - Apple Music -> 'Lossless'
- * - All other existing providers (JioSaavn, Jamendo MP3, YouTube, etc.) -> 'High'
+ * Clean & Authentic Quality & Category Router:
+ * - Apple Music -> 'Hi-Res Lossless'
+ * - Genuine Lossless (FLAC, ALAC, WAV, AIFF, Internet Archive FLAC, Jamendo FLAC, Lossless Gateways) -> 'Lossless'
+ * - 320kbps streams (Spotify and high-bitrate masters) -> 'Very High'
+ * - Standard/High streams (JioSaavn, Jamendo, YouTube) -> 'High'
  */
 export function getTrackSearchCategory(item: SearchResult): SearchCategory {
-  if (item?.category === 'OG' || item?.section === 'OG' || String(item?.id || '').startsWith('og:')) {
-    return 'OG';
-  }
   const src = String(item?.source || '').trim().toLowerCase();
-  if (src === 'spotify') return 'Very High';
-  if (src === 'apple music') return 'Lossless';
+  const codec = String(item?.codec || '').trim().toUpperCase();
+  const mime = String(item?.mimeType || '').trim().toLowerCase();
+  const url = String(item?.downloadUrl || '').trim().toLowerCase();
+
+  // 1. Apple Music tracks -> 'Hi-Res Lossless'
+  if (src === 'apple music' || item?.category === 'Hi-Res Lossless') {
+    return 'Hi-Res Lossless';
+  }
+
+  // 2. Genuine Lossless streams (only genuine FLAC, ALAC, WAV, AIFF - never MP3/AAC)
+  const isLosslessCodec =
+    /\b(flac|alac|wav|wave|aiff|pcm)\b/i.test(codec) ||
+    /\.(flac|alac|wav|wave|aiff)(\?|$)/i.test(url) ||
+    mime.includes('flac') ||
+    mime.includes('alac') ||
+    mime.includes('wav');
+
+  const isLossyFormat =
+    codec === 'MP3' ||
+    codec === 'OPUS' ||
+    codec === 'VORBIS' ||
+    codec === 'OGG' ||
+    codec === 'AAC' ||
+    codec === 'AAC-LC' ||
+    mime.includes('mpeg') ||
+    mime.includes('mp3') ||
+    mime.includes('mp4') ||
+    mime.includes('aac') ||
+    mime.includes('ogg') ||
+    mime.includes('webm') ||
+    url.includes('audius.co') ||
+    url.includes('yt-audio') ||
+    url.includes('yt-stream://') ||
+    /\.(mp3|m4a|aac|ogg|opus|webm)(\?|$)/i.test(url);
+
+  if (!isLossyFormat && (isLosslessCodec || item?.qualityBadge === 'Lossless' || src === 'lossless source' || src === 'wikimedia commons')) {
+    return 'Lossless';
+  }
+
+  // 3. Spotify or 320kbps full tracks -> 'Very High'
+  if (
+    src === 'spotify' ||
+    item?.category === 'Very High' ||
+    ((item?.bitrate ?? 0) >= 280 && src !== 'jiosaavn' && src !== 'youtube' && src !== 'jamendo')
+  ) {
+    return 'Very High';
+  }
+
+  // 4. All other catalog songs (JioSaavn, Jamendo, YouTube) -> 'High'
   return 'High';
 }
 
@@ -1016,8 +1069,7 @@ export function deduplicateAndSortSearchResults(results: SearchResult[], query?:
   for (const rawCandidate of uniqueById) {
     const candidateCategory = getTrackSearchCategory(rawCandidate);
 
-    // Keep verified OG tracks completely isolated from High/Very High/Lossless title stripping or fallback merging
-    if (candidateCategory === 'OG') {
+    if (candidateCategory === 'Hi-Res Lossless') {
       merged.push(rawCandidate);
       continue;
     }
@@ -1225,7 +1277,7 @@ export function harmonizeCanonicalSongCovers(results: SearchResult[]): SearchRes
   }
 
   return results.map((item) => {
-    if (getTrackSearchCategory(item) === 'OG') return item;
+    if (getTrackSearchCategory(item) === 'Hi-Res Lossless') return item;
     const baseTitle = extractBaseSongHeadline(item.name);
     const primaryArtist = getPhoneticArtistKey(item.artist);
     if (!baseTitle || !primaryArtist) return item;
