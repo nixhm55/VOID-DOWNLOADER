@@ -1,0 +1,14 @@
+/* Original square-cover declarations from src/index.css (cover-mini / cover-large). */
+.cover-mini, .cover-large {
+  display: grid; place-items: center; overflow: hidden; flex: 0 0 auto; color: hsl(var(--muted-foreground));
+  background: linear-gradient(145deg, hsl(var(--cover-h, 220) 16% 24%), hsl(calc(var(--cover-h, 220) + 26) 20% 11%));
+  box-shadow: inset 0 0 0 1px hsl(var(--foreground) / .08);
+}
+html:not(.dark) .cover-mini, html:not(.dark) .cover-large { background: linear-gradient(145deg, hsl(var(--cover-h, 220) 26% 88%), hsl(calc(var(--cover-h, 220) + 26) 28% 76%)); }
+.cover-mini { width: 44px; height: 44px; border-radius: var(--r-sm); }
+.cover-large { position: relative; width: 100%; aspect-ratio: 1; border-radius: var(--r-lg); box-shadow: inset 0 0 0 1px hsl(var(--foreground) / .08), var(--cover-shadow); }
+.cover-mini img, .cover-large img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity .3s ease; }
+.cover-mini img.loaded, .cover-large img.loaded { opacity: 1; }
+.cover-mini { position: relative; }
+.cover-mini svg { width: 16px; height: 16px; stroke-width: 1.4; opacity: .75; }
+.cover-large svg { width: 34px; height: 34px; stroke-width: 1; opacity: .6; }

@@ -1,0 +1,60 @@
+.topographic-terrain {
+  --topographic-terrain-material: #ffffff;
+  --topographic-terrain-ink: #000000;
+  --topographic-terrain-shadow: #737373;
+  position: relative;
+  isolation: isolate;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+.topographic-terrain-canvas {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.topographic-terrain-content {
+  position: relative;
+  z-index: 3;
+  min-height: 100%;
+}
+
+:root[data-theme='dark'] .topographic-terrain,
+:root:not([data-theme]).dark .topographic-terrain {
+  --topographic-terrain-material: #000000;
+  --topographic-terrain-ink: #ffffff;
+  --topographic-terrain-shadow: #9d9d9d;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]):not(.light) .topographic-terrain {
+    --topographic-terrain-material: #000000;
+    --topographic-terrain-ink: #ffffff;
+    --topographic-terrain-shadow: #9d9d9d;
+  }
+}
+
+.topographic-terrain[data-animate-entrance='true'] > .topographic-terrain-canvas {
+  opacity: 0;
+}
+.topographic-terrain[data-animate-entrance='true'][data-ready='true']
+  > .topographic-terrain-canvas {
+  opacity: 1;
+  animation: topographic-terrain-enter 800ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes topographic-terrain-enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .topographic-terrain[data-animate-entrance='true'][data-ready='true']
+    > .topographic-terrain-canvas {
+    animation: none;
+  }
+}

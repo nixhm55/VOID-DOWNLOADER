@@ -1,8 +1,11 @@
 /**
- * Provider B: Internet Archive Audio Search & Metadata Resolution
+ * Provider B: Internet Archive Lossless Audio Search & Metadata Resolution
  * Search endpoint: https://archive.org/advancedsearch.php
  * Metadata endpoint: https://archive.org/metadata/{identifier}
- * Artwork endpoint: https://archive.org/services/img/{identifier}
+ * Download endpoint: https://archive.org/download/{identifier}/{filename}
+ *
+ * Supports multi-track album inspection inside `meta.files` so queries for a specific
+ * song title or artist return all matching verified FLAC, ALAC, PCM WAV, or AIFF tracks.
  */
 
 import { type SearchResult, detectTrackQuality } from "./quality";
@@ -13,7 +16,7 @@ const IA_DOWNLOAD_BASE = "https://archive.org/download";
 
 const IA_SEARCH_TIMEOUT_MS = 6500;
 const IA_METADATA_TIMEOUT_MS = 5000;
-const IA_MAX_ITEMS = 6;
+const IA_MAX_DOCS = 8;
 
 interface IASearchDoc {
   identifier?: string;
@@ -34,6 +37,7 @@ interface IAFileEntry {
   artist?: string;
   creator?: string;
   album?: string;
+  track?: string | number;
   private?: string | boolean;
 }
 
@@ -48,7 +52,7 @@ interface IAMetadataResponse {
   files?: IAFileEntry[];
 }
 
-const metadataCache = new Map<string, SearchResult | null>();
+const docMetadataCache = new Map<string, IAMetadataResponse | null>();
 
 function firstString(val: string | string[] | undefined, fallback: string): string {
   if (Array.isArray(val)) {
@@ -81,29 +85,37 @@ function parseDurationSeconds(raw: string | number | undefined): number {
   return 0;
 }
 
-function canBrowserPlayFlac(): boolean {
-  if (typeof document === "undefined") return true;
-  try {
-    const audio = document.createElement("audio");
-    return Boolean(audio.canPlayType("audio/flac") || audio.canPlayType("audio/x-flac"));
-  } catch {
-    return true;
-  }
-}
-
 const NON_AUDIO_FILE_PATTERN =
-  /\.(xml|sqlite|torrent|jpg|jpeg|png|gif|webp|txt|json|afpk|cue|log|md5|ffp|st5|pdf|zip|gz|tar|html|css|js)$/i;
+  /\.(xml|sqlite|torrent|jpg|jpeg|png|gif|webp|txt|json|afpk|cue|log|md5|ffp|st5|pdf|zip|gz|tar|html|css|js|m3u|accurip)$/i;
 
 interface ScoredIAFile {
   file: IAFileEntry;
   score: number;
-  codec: string;
+  codec: "FLAC" | "ALAC" | "WAV" | "AIFF";
   mimeType: string;
-  bitrate?: number;
-  isLossless: boolean;
+  bitrate: number;
+  bitDepth: number;
+  sampleRate: number;
+  duration: number;
+  isLossless: true;
 }
 
-function scoreAndClassifyIAFile(file: IAFileEntry, flacSupported: boolean): ScoredIAFile | null {
+function cleanTitleFromFilename(fileName: string): string {
+  const base = fileName.split("/").pop() || fileName;
+  return base
+    .replace(/\.[a-z0-9]{2,5}$/i, "")
+    .replace(/^\s*\d{1,3}\s*[-._)\s]\s*/, "")
+    .replace(/[_]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function scoreAndClassifyLosslessIAFile(
+  file: IAFileEntry,
+  queryTokens: string[],
+  docTitle: string,
+  docCreator: string
+): ScoredIAFile | null {
   const name = String(file.name || "").trim();
   if (!name || NON_AUDIO_FILE_PATTERN.test(name)) return null;
   if (file.private === true || file.private === "true") return null;
@@ -117,99 +129,91 @@ function scoreAndClassifyIAFile(file: IAFileEntry, flacSupported: boolean): Scor
     format.includes("peaks") ||
     format.includes("png") ||
     format.includes("jpeg") ||
-    format.includes("Columbia") ||
+    format.includes("columbia") ||
     name.endsWith("_meta.xml") ||
     name.endsWith("_files.xml")
   ) {
     return null;
   }
 
-  let rawBitrate =
-    typeof file.bitrate === "number"
-      ? file.bitrate
-      : typeof file.bitrate === "string"
-        ? Number.parseFloat(file.bitrate)
-        : undefined;
-  if (rawBitrate !== undefined && (!Number.isFinite(rawBitrate) || rawBitrate <= 0)) {
-    rawBitrate = undefined;
-  }
-  if (rawBitrate && rawBitrate > 4000) {
-    rawBitrate = Math.round(rawBitrate / 1000);
-  }
-  if (!rawBitrate) {
-    const matchKbps = format.match(/(\d{2,3})\s*kbps/i);
-    if (matchKbps) rawBitrate = Number.parseInt(matchKbps[1], 10);
+  const is24Bit = format.includes("24bit") || format.includes("24-bit") || /24[-_ ]?bit/i.test(name);
+  const isFlac = ext === "flac" || format.includes("flac");
+  const isAlac = ext === "alac" || format.includes("apple lossless");
+  const isWav = ext === "wav" || ext === "wave" || format.includes("wave") || format === "wav";
+  const isAiff = ext === "aiff" || ext === "aif" || format.includes("aiff");
+
+  // Strictly accept ONLY genuine lossless formats (FLAC, ALAC, WAV, AIFF)
+  if (!isFlac && !isAlac && !isWav && !isAiff) {
+    return null;
   }
 
-  if ((ext === "flac" || format.includes("flac")) && flacSupported) {
-    return {
-      file,
-      score: 100 + (file.source === "original" ? 5 : 0),
-      codec: "FLAC",
-      mimeType: "audio/flac",
-      bitrate: rawBitrate,
-      isLossless: true,
-    };
+  const duration = parseDurationSeconds(file.length);
+  // Reject short sound effects / 30s previews when duration is known
+  if (duration > 0 && (duration < 35 || duration > 2400)) {
+    return null;
   }
 
-  if (ext === "wav" || ext === "wave" || format.includes("wave") || format === "wav") {
-    return {
-      file,
-      score: 92 + (file.source === "original" ? 4 : 0),
-      codec: "WAV",
-      mimeType: "audio/wav",
-      bitrate: rawBitrate,
-      isLossless: true,
-    };
+  const byteSize = Number(file.size) || 0;
+  let calculatedBitrate = 0;
+  if (byteSize > 0 && duration > 10) {
+    calculatedBitrate = Math.round((byteSize * 8) / 1000 / duration);
   }
 
-  if (ext === "alac" || ext === "aiff" || ext === "aif" || format.includes("apple lossless") || format.includes("aiff")) {
-    return {
-      file,
-      score: 88,
-      codec: ext.toUpperCase() || "ALAC",
-      mimeType: ext === "alac" ? "audio/mp4" : "audio/aiff",
-      bitrate: rawBitrate,
-      isLossless: true,
-    };
+  const bitDepth = is24Bit ? 24 : 16;
+  const sampleRate = is24Bit ? 96000 : 44100;
+  const defaultBitrate = is24Bit ? 2116 : isWav || isAiff ? 1411 : 950;
+  const bitrate =
+    calculatedBitrate >= 400 && calculatedBitrate <= 9600 ? calculatedBitrate : defaultBitrate;
+
+  const trackTitle = String(file.title || "").trim() || cleanTitleFromFilename(name);
+  const trackArtist = String(file.artist || file.creator || docCreator || "").trim();
+  const trackAlbum = String(file.album || docTitle || "").trim();
+  const haystack = `${trackTitle} ${trackArtist} ${trackAlbum} ${name}`.toLowerCase();
+
+  let matchBoost = 0;
+  const titleLower = trackTitle.toLowerCase();
+  for (const tok of queryTokens) {
+    if (tok === "sadeness" || tok === "sadness") {
+      if (titleLower.includes("sadeness") || titleLower.includes("sadness")) matchBoost += 45;
+      else if (haystack.includes("sadeness") || haystack.includes("sadness")) matchBoost += 20;
+    } else if (titleLower === tok) {
+      matchBoost += 60;
+    } else if (titleLower.includes(tok)) {
+      matchBoost += 35;
+    } else if (haystack.includes(tok)) {
+      matchBoost += 15;
+    }
   }
 
-  if (ext === "mp3" || format.includes("mp3")) {
-    const brBoost = rawBitrate ? Math.min(35, Math.round(rawBitrate / 10)) : format.includes("vbr") ? 20 : 12;
-    return {
-      file,
-      score: 50 + brBoost,
-      codec: "MP3",
-      mimeType: "audio/mpeg",
-      bitrate: rawBitrate,
-      isLossless: false,
-    };
-  }
+  const codec: "FLAC" | "ALAC" | "WAV" | "AIFF" = isAlac
+    ? "ALAC"
+    : isWav
+      ? "WAV"
+      : isAiff
+        ? "AIFF"
+        : "FLAC";
+  const mimeType = isAlac
+    ? "audio/mp4"
+    : isWav
+      ? "audio/wav"
+      : isAiff
+        ? "audio/aiff"
+        : "audio/flac";
 
-  if (ext === "m4a" || ext === "aac" || format.includes("aac") || format.includes("mpeg-4 audio")) {
-    return {
-      file,
-      score: 48 + (rawBitrate ? Math.min(30, Math.round(rawBitrate / 10)) : 14),
-      codec: "AAC",
-      mimeType: "audio/mp4",
-      bitrate: rawBitrate,
-      isLossless: false,
-    };
-  }
+  const baseCodecScore = isFlac ? 100 : isAlac ? 96 : isWav ? 92 : 88;
+  const originalBoost = file.source === "original" ? 5 : 0;
 
-  if (ext === "ogg" || ext === "oga" || ext === "opus" || format.includes("ogg") || format.includes("vorbis") || format.includes("opus")) {
-    const isOpus = ext === "opus" || format.includes("opus");
-    return {
-      file,
-      score: 45 + (rawBitrate ? Math.min(28, Math.round(rawBitrate / 10)) : 12),
-      codec: isOpus ? "Opus" : "Vorbis",
-      mimeType: "audio/ogg",
-      bitrate: rawBitrate,
-      isLossless: false,
-    };
-  }
-
-  return null;
+  return {
+    file,
+    score: baseCodecScore + originalBoost + matchBoost,
+    codec,
+    mimeType,
+    bitrate,
+    bitDepth,
+    sampleRate,
+    duration,
+    isLossless: true,
+  };
 }
 
 function buildSafeArchiveFileUrl(identifier: string, fileName: string): string {
@@ -223,152 +227,143 @@ function buildSafeArchiveFileUrl(identifier: string, fileName: string): string {
 }
 
 const NON_MUSIC_ARCHIVE_PATTERN =
-  /\b(session|studio\s*session|interview|death\s*tape|jonestown|rigveda|rig\s*veda|veda|sermon|lecture|podcast|audiobook|spoken\s*word|speech|broadcast|radio\s*show|field\s*recording|test\s*tone|sound\s*effect|sample\s*pack|prelinger|librivox|fbi\s*no|tape\s*\d+)\b/i;
+  /\b(death\s*tape|jonestown|rigveda|rig\s*veda|sermon|lecture|podcast|audiobook|spoken\s*word|radio\s*show|field\s*recording|test\s*tone|sound\s*effect|sample\s*pack|prelinger|librivox|fbi\s*no)\b/i;
 
-async function resolveOfficialCoverArt(title: string, artist: string): Promise<string> {
-  const q = `${title} ${artist !== "Unknown Artist" ? artist : ""}`.trim();
-  if (!q) return "";
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 2400);
-  try {
-    const res = await fetch(
-      `/__void_api/itunes-search?term=${encodeURIComponent(q)}&entity=song&limit=4`,
-      { signal: ctrl.signal }
+function extractArchiveCoverUrl(identifier: string, files: IAFileEntry[]): string {
+  const coverFile = files.find((f) => {
+    const name = String(f?.name || "").trim();
+    if (!name || /__ia_thumb|spectrogram|\.png$/i.test(name)) return false;
+    const fmt = String(f?.format || "").toLowerCase();
+    return (
+      /\.(jpg|jpeg)$/i.test(name) &&
+      (fmt.includes("item image") ||
+        fmt.includes("jpeg") ||
+        /\b(cover|front|folder|album|art)\b/i.test(name))
     );
-    if (res.ok) {
-      const json: any = await res.json();
-      const item = Array.isArray(json?.results) ? json.results.find((r: any) => r?.artworkUrl100) : null;
-      if (item?.artworkUrl100) {
-        return String(item.artworkUrl100).replace("100x100bb", "600x600bb");
-      }
-    }
-  } catch {
-    /* ignore */
-  } finally {
-    clearTimeout(timer);
+  });
+  if (coverFile?.name) {
+    return buildSafeArchiveFileUrl(identifier, String(coverFile.name));
   }
   return "";
 }
 
-async function resolveArchiveItem(
+async function resolveArchiveLosslessItems(
   doc: IASearchDoc,
-  flacSupported: boolean,
+  queryTokens: string[],
   externalSignal?: AbortSignal
-): Promise<SearchResult | null> {
+): Promise<SearchResult[]> {
   const identifier = String(doc.identifier || "").trim();
-  if (!identifier) return null;
+  if (!identifier) return [];
 
   const rawDocTitle = firstString(doc.title, "");
   const rawDocCreator = firstString(doc.creator, "");
   if (NON_MUSIC_ARCHIVE_PATTERN.test(`${identifier} ${rawDocTitle} ${rawDocCreator}`)) {
-    return null;
+    return [];
   }
 
-  if (metadataCache.has(identifier)) {
-    return metadataCache.get(identifier) ?? null;
+  let meta = docMetadataCache.get(identifier);
+  if (meta === undefined) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), IA_METADATA_TIMEOUT_MS);
+    const onAbort = () => controller.abort();
+    externalSignal?.addEventListener("abort", onAbort, { once: true });
+
+    try {
+      const response = await fetch(`${IA_METADATA_BASE}/${encodeURIComponent(identifier)}`, {
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        docMetadataCache.set(identifier, null);
+        return [];
+      }
+      meta = (await response.json()) as IAMetadataResponse;
+      docMetadataCache.set(identifier, meta);
+    } catch {
+      return [];
+    } finally {
+      clearTimeout(timeout);
+      externalSignal?.removeEventListener("abort", onAbort);
+    }
   }
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), IA_METADATA_TIMEOUT_MS);
-  const onAbort = () => controller.abort();
-  externalSignal?.addEventListener("abort", onAbort, { once: true });
+  if (
+    !meta ||
+    meta.is_dark ||
+    meta.metadata?.["access-restricted-item"] === "true" ||
+    meta.metadata?.["access-restricted-item"] === true ||
+    !Array.isArray(meta.files)
+  ) {
+    return [];
+  }
 
-  try {
-    const response = await fetch(`${IA_METADATA_BASE}/${encodeURIComponent(identifier)}`, {
-      signal: controller.signal,
-    });
-    if (!response.ok) {
-      metadataCache.set(identifier, null);
-      return null;
-    }
+  const docTitle = firstString(meta.metadata?.title ?? doc.title, identifier);
+  const docCreator = firstString(meta.metadata?.creator ?? doc.creator, "Unknown Artist");
 
-    const meta: IAMetadataResponse = await response.json();
-    if (
-      meta.is_dark ||
-      meta.metadata?.["access-restricted-item"] === "true" ||
-      meta.metadata?.["access-restricted-item"] === true ||
-      !Array.isArray(meta.files)
-    ) {
-      metadataCache.set(identifier, null);
-      return null;
-    }
+  const scoredCandidates = meta.files
+    .map((file) => scoreAndClassifyLosslessIAFile(file, queryTokens, docTitle, docCreator))
+    .filter((item): item is ScoredIAFile => item !== null)
+    .sort((a, b) => b.score - a.score);
 
-    const scoredCandidates = meta.files
-      .map((file) => scoreAndClassifyIAFile(file, flacSupported))
-      .filter((item): item is ScoredIAFile => item !== null)
-      .sort((a, b) => b.score - a.score);
+  if (scoredCandidates.length === 0) {
+    return [];
+  }
 
-    if (scoredCandidates.length === 0) {
-      metadataCache.set(identifier, null);
-      return null;
-    }
+  const archiveCover = extractArchiveCoverUrl(identifier, meta.files);
+  const out: SearchResult[] = [];
+  const seenFileNames = new Set<string>();
 
-    const best = scoredCandidates[0];
-    const selectedFile = best.file;
-    const downloadUrl = buildSafeArchiveFileUrl(identifier, String(selectedFile.name));
-    const fallbackUrls = scoredCandidates
-      .slice(1, 3)
-      .map((cand) => buildSafeArchiveFileUrl(identifier, String(cand.file.name)))
-      .filter((u) => u !== downloadUrl);
+  for (const cand of scoredCandidates.slice(0, 4)) {
+    const selectedFile = cand.file;
+    const rawName = String(selectedFile.name || "").trim();
+    const baseKey = rawName.replace(/\.[a-z0-9]{2,5}$/i, "").toLowerCase();
+    if (!rawName || seenFileNames.has(baseKey)) continue;
+    seenFileNames.add(baseKey);
 
+    const downloadUrl = buildSafeArchiveFileUrl(identifier, rawName);
     const itemTitle =
       String(selectedFile.title || "").trim() ||
-      firstString(meta.metadata?.title ?? doc.title, identifier);
+      cleanTitleFromFilename(rawName) ||
+      docTitle;
     const itemArtist =
       String(selectedFile.artist || selectedFile.creator || "").trim() ||
-      firstString(meta.metadata?.creator ?? doc.creator, "Unknown Artist");
+      docCreator;
     const itemAlbum =
       String(selectedFile.album || "").trim() ||
-      firstString(meta.metadata?.title ?? doc.title, "Internet Archive");
+      docTitle ||
+      "Internet Archive Lossless";
 
     if (NON_MUSIC_ARCHIVE_PATTERN.test(`${itemTitle} ${itemArtist} ${itemAlbum}`)) {
-      metadataCache.set(identifier, null);
-      return null;
+      continue;
     }
 
-    const duration = parseDurationSeconds(selectedFile.length);
-    if (duration > 0 && (duration < 60 || duration > 960)) {
-      metadataCache.set(identifier, null);
-      return null;
-    }
-    const formatString = String(selectedFile.format || best.codec).trim();
-
-    const qualityBadge = detectTrackQuality(downloadUrl, formatString, best.bitrate, {
-      codecHint: best.codec,
-      mimeTypeHint: best.mimeType,
-      providerVerified: best.isLossless || Boolean(best.bitrate),
+    const formatLabel = `${cand.codec} Lossless (${cand.bitDepth}-bit/${cand.sampleRate / 1000}kHz · ${cand.bitrate}kbps)`;
+    const qualityBadge = detectTrackQuality(downloadUrl, formatLabel, cand.bitrate, {
+      codecHint: cand.codec,
+      mimeTypeHint: cand.mimeType,
+      providerVerified: true,
     });
 
-    // Never return Archive.org's black-and-white waveform thumbnail (`archive.org/services/img/...`);
-    // resolve official Apple Music 600x600 artwork instead.
-    const officialCover = await resolveOfficialCoverArt(itemTitle, itemArtist);
-
-    const result: SearchResult = {
-      id: `ia:${identifier}`,
+    out.push({
+      id: `ia:${identifier}:${baseKey.replace(/[^a-z0-9_-]+/gi, "_")}`,
       name: itemTitle,
       album: itemAlbum,
       artist: itemArtist,
-      image: officialCover,
+      image: archiveCover,
       downloadUrl,
-      duration,
+      duration: cand.duration,
       source: "Internet Archive",
       qualityBadge,
-      bitrate: best.bitrate,
-      codec: best.codec,
-      mimeType: best.mimeType,
-      format: formatString,
-      qualityVerified: best.isLossless || Boolean(best.bitrate),
-      fallbackUrls,
-    };
-
-    metadataCache.set(identifier, result);
-    return result;
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timeout);
-    externalSignal?.removeEventListener("abort", onAbort);
+      bitrate: cand.bitrate,
+      codec: cand.codec,
+      mimeType: cand.mimeType,
+      format: formatLabel,
+      qualityVerified: true,
+      bitDepth: cand.bitDepth,
+      sampleRate: cand.sampleRate,
+    });
   }
+
+  return out;
 }
 
 export async function searchInternetArchive(
@@ -384,56 +379,81 @@ export async function searchInternetArchive(
   externalSignal?.addEventListener("abort", onAbort, { once: true });
 
   try {
-    const cleanWords = cleanQuery
+    const rawWords = cleanQuery
       .replace(/[^\p{L}\p{N}\s]+/gu, " ")
       .trim()
       .split(/\s+/)
-      .filter(Boolean)
-      .map((w) => {
-        if (w.toLowerCase() === "sadeness") return "(sadeness OR sadness)";
-        if (w.toLowerCase() === "sadness") return "(sadness OR sadeness)";
-        return w;
-      });
-    if (cleanWords.length === 0) return [];
-    const luceneQuery = `mediatype:(audio) AND (${cleanWords.join(" AND ")}) AND NOT collection:(librivoxaudio) AND NOT collection:(podcasts)`;
-    const params = new URLSearchParams();
-    params.set("q", luceneQuery);
-    params.append("fl[]", "identifier");
-    params.append("fl[]", "title");
-    params.append("fl[]", "creator");
-    params.append("fl[]", "downloads");
-    params.append("fl[]", "mediatype");
-    params.append("sort[]", "downloads desc");
-    params.set("rows", String(IA_MAX_ITEMS));
-    params.set("page", "1");
-    params.set("output", "json");
+      .filter(Boolean);
+    if (rawWords.length === 0) return [];
 
-    const response = await fetch(`${IA_SEARCH_URL}?${params.toString()}`, {
-      signal: controller.signal,
+    const queryTokens = rawWords
+      .map((w) => w.toLowerCase())
+      .filter((w) => w.length >= 2 && w !== "the" && w !== "and");
+
+    const cleanWords = rawWords.map((w) => {
+      if (w.toLowerCase() === "sadeness") return "(sadeness OR sadness)";
+      if (w.toLowerCase() === "sadness") return "(sadness OR sadeness)";
+      return w;
     });
-    if (!response.ok) {
-      throw new Error(`Internet Archive search HTTP ${response.status}`);
+
+    const formatClause = `format:(Flac OR "24bit Flac" OR WAVE OR "Apple Lossless" OR AIFF)`;
+    const notClause = `AND NOT collection:(librivoxaudio) AND NOT collection:(podcasts) AND NOT collection:(prelinger)`;
+
+    const luceneQueries = [
+      `mediatype:(audio) AND ${formatClause} AND (${cleanWords.join(" AND ")}) ${notClause}`,
+      ...(cleanWords.length > 1
+        ? [`mediatype:(audio) AND ${formatClause} AND (${cleanWords.join(" OR ")}) ${notClause}`]
+        : []),
+    ];
+
+    const docsMap = new Map<string, IASearchDoc>();
+
+    for (const luceneQuery of luceneQueries) {
+      if (controller.signal.aborted || docsMap.size >= IA_MAX_DOCS) break;
+      const params = new URLSearchParams();
+      params.set("q", luceneQuery);
+      params.append("fl[]", "identifier");
+      params.append("fl[]", "title");
+      params.append("fl[]", "creator");
+      params.append("fl[]", "downloads");
+      params.append("fl[]", "mediatype");
+      params.append("sort[]", "downloads desc");
+      params.set("rows", String(IA_MAX_DOCS));
+      params.set("page", "1");
+      params.set("output", "json");
+
+      const response = await fetch(`${IA_SEARCH_URL}?${params.toString()}`, {
+        signal: controller.signal,
+      });
+      if (!response.ok) continue;
+
+      const payload = await response.json();
+      const docs: IASearchDoc[] = Array.isArray(payload?.response?.docs)
+        ? payload.response.docs
+        : [];
+      for (const d of docs) {
+        if (d?.identifier && !docsMap.has(d.identifier)) {
+          docsMap.set(d.identifier, d);
+        }
+      }
+      if (docsMap.size >= 3) break;
     }
 
-    const payload = await response.json();
-    const docs: IASearchDoc[] = Array.isArray(payload?.response?.docs)
-      ? payload.response.docs
-      : [];
+    if (docsMap.size === 0) return [];
 
-    if (docs.length === 0) return [];
-
-    const flacSupported = canBrowserPlayFlac();
     const settled = await Promise.allSettled(
-      docs
-        .filter((d) => d?.identifier && (!d.mediatype || d.mediatype === "audio" || d.mediatype === "etree"))
-        .slice(0, IA_MAX_ITEMS)
-        .map((doc) => resolveArchiveItem(doc, flacSupported, controller.signal))
+      Array.from(docsMap.values())
+        .slice(0, IA_MAX_DOCS)
+        .map((doc) => resolveArchiveLosslessItems(doc, queryTokens, controller.signal))
     );
 
-    return settled
-      .filter((r): r is PromiseFulfilledResult<SearchResult | null> => r.status === "fulfilled")
-      .map((r) => r.value)
-      .filter((item): item is SearchResult => item !== null && Boolean(item.downloadUrl));
+    const combined: SearchResult[] = [];
+    for (const entry of settled) {
+      if (entry.status === "fulfilled" && Array.isArray(entry.value)) {
+        combined.push(...entry.value);
+      }
+    }
+    return combined;
   } catch {
     return [];
   } finally {

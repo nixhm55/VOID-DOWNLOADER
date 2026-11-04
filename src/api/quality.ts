@@ -1,6 +1,9 @@
 /**
  * Shared Audio Quality Detection, Provider Attribution, and SearchResult Normalization
  * for VOID Music Player.
+ *
+ * Preserves existing HIGH, VERY HIGH, and LOSSLESS sections untouched while adding
+ * isolated routing for the 4th section: OG.
  */
 
 export type QualityTier =
@@ -24,6 +27,12 @@ export type CanonicalProviderName =
   | 'Jamendo'
   | 'YouTube'
   | 'Internet Archive'
+  | 'Wikimedia Commons'
+  | 'MassiveMusic / 7digital'
+  | 'Tuned Global'
+  | 'AudioSocket'
+  | 'Qobuz'
+  | 'TIDAL'
   | 'Lossless Source'
   | string;
 
@@ -41,7 +50,6 @@ export interface SearchResult {
   bitrate?: number;
   codec?: string;
 
-  // Additional metadata for stream verification, playback fallback, and live radio handling
   mimeType?: string;
   format?: string;
   qualityVerified?: boolean;
@@ -52,6 +60,33 @@ export interface SearchResult {
   sampleRate?: number;
   language?: string;
   label?: string;
+
+  // OG Genuine Lossless section fields (strictly isolated from High / Very High / Lossless)
+  category?: 'High' | 'Very High' | 'Lossless' | 'OG';
+  section?: 'OG';
+  isrc?: string | null;
+  providerId?: string;
+  providerName?: string;
+  ogSpecBadge?: string; // e.g., "FLAC · 16-bit · 44.1 kHz" or "FLAC · 24-bit · 96 kHz"
+  qualityClassification?: string;
+  ogVerified?: boolean;
+  ogPlayable?: boolean;
+  ogDownloadAllowed?: boolean;
+  rights?: {
+    licenseType?: string;
+    licenseUrl?: string | null;
+    territory?: string;
+    commercialStreamingAllowed?: boolean;
+    downloadAllowed?: boolean;
+    attributionText?: string | null;
+    sourcePageUrl?: string | null;
+  };
+  classifications?: {
+    technicallyVerifiedLossless: boolean;
+    provenanceVerifiedOriginal: boolean;
+    provenanceStatus: string;
+    rightsClearedPlayable: boolean;
+  };
 }
 
 export interface QualityDetectionOptions {
@@ -62,12 +97,6 @@ export interface QualityDetectionOptions {
   sourceHint?: string;
 }
 
-/**
- * Classifies a track into one of the 3 top-level quality lists:
- * - 'very-high' (Very High / 320kbps / Lossless)
- * - 'high' (High / 160kbps - 256kbps)
- * - 'standard' (Standard / 128kbps / 96kbps)
- */
 export function getTrackQualityCategory(
   item: Pick<SearchResult, 'qualityBadge' | 'bitrate' | 'isLive'>
 ): QualityCategory {
@@ -96,34 +125,41 @@ export function getTrackQualityCategory(
   return 'standard';
 }
 
-/**
- * Exact canonical display names required across VOID UI.
- * Never returns "VOID" or "void" for external provider tracks.
- */
 const PROVIDER_DISPLAY_MAP: Record<string, string> = {
   jiosaavn: 'JioSaavn',
   saavn: 'JioSaavn',
   youtube: 'YouTube',
   yt: 'YouTube',
   jamendo: 'Jamendo',
+  'jamendo-flac': 'Jamendo',
   'internet archive': 'Internet Archive',
   internetarchive: 'Internet Archive',
   'internet-archive': 'Internet Archive',
   archive: 'Internet Archive',
   'archive.org': 'Internet Archive',
   ia: 'Internet Archive',
+  'wikimedia commons': 'Wikimedia Commons',
+  'wikimedia-commons': 'Wikimedia Commons',
+  wikimedia: 'Wikimedia Commons',
+  massivemusic: 'MassiveMusic / 7digital',
+  '7digital': 'MassiveMusic / 7digital',
+  'tuned-global': 'Tuned Global',
+  'tuned global': 'Tuned Global',
+  audiosocket: 'AudioSocket',
+  qobuz: 'Qobuz',
+  tidal: 'TIDAL',
   'radio browser': 'Radio Browser',
   radiobrowser: 'Radio Browser',
   'radio-browser': 'Radio Browser',
   'lossless source': 'Lossless Source',
   'lossless-gateway': 'Lossless Source',
   lossless: 'Lossless Source',
+  spotify: 'Spotify',
+  'apple music': 'Apple Music',
+  'apple-music': 'Apple Music',
+  applemusic: 'Apple Music',
 };
 
-/**
- * Resolves a consistent, human-readable provider display label.
- * Explicitly prevents "VOID" or "void" from being used as a provider source label.
- */
 export function formatProviderLabel(source?: string | null, trackHint?: any): string {
   const raw = String(source ?? trackHint?.source ?? '').trim();
   if (raw && raw.toLowerCase() !== 'void' && raw.toLowerCase() !== 'local') {
@@ -138,10 +174,13 @@ export function formatProviderLabel(source?: string | null, trackHint?: any): st
   if (url.includes('saavncdn.com') || url.includes('jiosaavn') || id.startsWith('jiosaavn:')) {
     return 'JioSaavn';
   }
-  if (url.includes('archive.org') || id.startsWith('ia:')) {
+  if (url.includes('wikimedia.org') || id.startsWith('og:commons:')) {
+    return 'Wikimedia Commons';
+  }
+  if (url.includes('archive.org') || id.startsWith('ia:') || id.startsWith('og:ia:')) {
     return 'Internet Archive';
   }
-  if (url.includes('jamendo.com') || url.includes('audius.co') || id.startsWith('jamendo:')) {
+  if (url.includes('jamendo.com') || url.includes('audius.co') || id.startsWith('jamendo:') || id.startsWith('og:jamendo:')) {
     return 'Jamendo';
   }
   if (id.startsWith('radio:') || trackHint?.isLive || trackHint?.album === 'Live Radio') {
@@ -168,13 +207,6 @@ export function formatProviderLabel(source?: string | null, trackHint?: any): st
   return '';
 }
 
-/**
- * Provider priority order:
- * 1. JioSaavn (first in list)
- * 2. Jamendo (second in list)
- * 3. YouTube (third in list)
- * 4. Any other providers
- */
 export function getProviderPriorityRank(source?: string | null, trackHint?: any): number {
   const label = formatProviderLabel(source, trackHint);
   if (label === 'JioSaavn') {
@@ -283,9 +315,6 @@ function extractPartOrder(title: string): number {
   return 0;
 }
 
-/**
- * Computes a fine-grained relevance score for a search result against the user's query.
- */
 export function getSearchRelevanceScore(
   item: Pick<SearchResult, 'name' | 'artist' | 'album'>,
   query?: string
@@ -318,7 +347,6 @@ export function getSearchRelevanceScore(
     allWords.some((aw) => isOneCharVariantWord(qw, aw))
   );
 
-  // 1. Exact song title match
   if (normTitle === normQuery || coreTitle === normQuery) {
     return { tier: 1000, exactSpelling: 2, partOrder };
   }
@@ -330,7 +358,6 @@ export function getSearchRelevanceScore(
     return { tier: 980, exactSpelling: 1, partOrder };
   }
 
-  // 2. Song title starts with the query
   if (
     normTitle.startsWith(normQuery + ' ') ||
     coreTitle.startsWith(normQuery + ' ')
@@ -345,7 +372,6 @@ export function getSearchRelevanceScore(
     return { tier: 910, exactSpelling: 1, partOrder };
   }
 
-  // 3. All query words appear in the song title as whole words
   if (hasExactWordInTitle) {
     return { tier: 860, exactSpelling: 2, partOrder };
   }
@@ -353,7 +379,6 @@ export function getSearchRelevanceScore(
     return { tier: 820, exactSpelling: 1, partOrder };
   }
 
-  // 4. All query words appear across Title + Artist as whole words
   if (hasExactWordInAll) {
     return { tier: 720, exactSpelling: 2, partOrder };
   }
@@ -361,7 +386,6 @@ export function getSearchRelevanceScore(
     return { tier: 680, exactSpelling: 1, partOrder };
   }
 
-  // 5. Substring match where the full query is contained in the title or artist
   if (normTitle.includes(normQuery)) {
     return { tier: 520, exactSpelling: 1, partOrder };
   }
@@ -369,7 +393,6 @@ export function getSearchRelevanceScore(
     return { tier: 450, exactSpelling: 1, partOrder };
   }
 
-  // 6. Multi-word query partial whole-word match
   const significantQueryWords = queryWords.filter((w) => w.length >= 4);
   if (
     significantQueryWords.length > 1 &&
@@ -601,14 +624,24 @@ export function getQualitySortRank(result: Pick<SearchResult, 'qualityBadge' | '
 }
 
 export function compareResultsByQuality(a: SearchResult, b: SearchResult, query?: string): number {
-  // Strictly order providers: 1. JioSaavn (#1 top), 2. Jamendo (#2), 3. YouTube (#3), 4. Others (#4)
+  // Keep OG tracks sorted by highest native bit-depth & sample rate
+  const catA = getTrackSearchCategory(a);
+  const catB = getTrackSearchCategory(b);
+  if (catA === 'OG' && catB === 'OG') {
+    const bdDiff = (Number(b.bitDepth) || 16) - (Number(a.bitDepth) || 16);
+    if (bdDiff !== 0) return bdDiff;
+    const srDiff = (Number(b.sampleRate) || 44100) - (Number(a.sampleRate) || 44100);
+    if (srDiff !== 0) return srDiff;
+    return 0;
+  }
+
   const rankA = getProviderPriorityRank(a.source, a);
   const rankB = getProviderPriorityRank(b.source, b);
   if (rankA !== rankB) return rankA - rankB;
 
-  // JioSaavn (#1 priority) stays in JioSaavn's exact native search order at the top,
-  // before the title-relevance algorithm runs on the remaining providers below it.
-  if (rankA === 1) {
+  const srcA = String(a.source || '').trim().toLowerCase();
+  const srcB = String(b.source || '').trim().toLowerCase();
+  if (rankA === 1 || (srcA === srcB && (srcA === 'apple music' || srcA === 'spotify'))) {
     return 0;
   }
 
@@ -939,16 +972,38 @@ export function deduplicateTrackCollection<T extends Record<string, any>>(
 }
 
 /**
- * Deduplicates unified search results within each provider and sorts strictly:
- * 1st: JioSaavn, 2nd: Jamendo, 3rd: YouTube.
+ * The four independent quality sections in Void:
+ * 1. 'High'
+ * 2. 'Very High'
+ * 3. 'Lossless'
+ * 4. 'OG'
  */
+export type SearchCategory = 'High' | 'Very High' | 'Lossless' | 'OG';
+
+/**
+ * Maps a track strictly to one of the four UI categories:
+ * - OG verified tracks (`category === 'OG'` or `section === 'OG'`) -> 'OG'
+ * - Spotify -> 'Very High'
+ * - Apple Music -> 'Lossless'
+ * - All other existing providers (JioSaavn, Jamendo MP3, YouTube, etc.) -> 'High'
+ */
+export function getTrackSearchCategory(item: SearchResult): SearchCategory {
+  if (item?.category === 'OG' || item?.section === 'OG' || String(item?.id || '').startsWith('og:')) {
+    return 'OG';
+  }
+  const src = String(item?.source || '').trim().toLowerCase();
+  if (src === 'spotify') return 'Very High';
+  if (src === 'apple music') return 'Lossless';
+  return 'High';
+}
+
 export function deduplicateAndSortSearchResults(results: SearchResult[], query?: string): SearchResult[] {
   const byExactId = new Map<string, SearchResult>();
 
   for (const item of results) {
     if (!item || !item.id || !item.downloadUrl) continue;
     if (isLikelySpamOrAdResult(item)) continue;
-    const exactKey = `${(item.source || '').toLowerCase()}:${item.id}`;
+    const exactKey = `${getTrackSearchCategory(item)}:${(item.source || '').toLowerCase()}:${item.id}`;
     const existing = byExactId.get(exactKey);
     if (!existing || compareResultsByQuality(item, existing, query) < 0) {
       byExactId.set(exactKey, item);
@@ -959,6 +1014,14 @@ export function deduplicateAndSortSearchResults(results: SearchResult[], query?:
   const merged: SearchResult[] = [];
 
   for (const rawCandidate of uniqueById) {
+    const candidateCategory = getTrackSearchCategory(rawCandidate);
+
+    // Keep verified OG tracks completely isolated from High/Very High/Lossless title stripping or fallback merging
+    if (candidateCategory === 'OG') {
+      merged.push(rawCandidate);
+      continue;
+    }
+
     const cleanedName = cleanCanonicalTrackTitle(rawCandidate.name) || rawCandidate.name;
     const candidate: SearchResult =
       cleanedName !== rawCandidate.name ? { ...rawCandidate, name: cleanedName } : rawCandidate;
@@ -989,6 +1052,9 @@ export function deduplicateAndSortSearchResults(results: SearchResult[], query?:
       if (existing.isLive || existing.qualityBadge === 'Live Radio' || existing.qualityBadge === 'FLAC Live') {
         return false;
       }
+      if (getTrackSearchCategory(existing) !== candidateCategory) {
+        return false;
+      }
       return areSongsFuzzyDuplicates(candidate.name, existing.name, candidate.artist, existing.artist, false);
     });
 
@@ -1016,6 +1082,37 @@ export function deduplicateAndSortSearchResults(results: SearchResult[], query?:
           ...(winner.qualityUrls || {}),
         },
         fallbackUrls: combinedFallbacks.length > 0 ? combinedFallbacks : winner.fallbackUrls,
+      };
+    }
+  }
+
+  // Enrich Spotify ('Very High') tracks with full-length 320kbps audio streams
+  // when the catalog only provided a 30s preview URL. Never touch 'Lossless' or 'OG'!
+  const highTracks = merged.filter(t => getTrackSearchCategory(t) === 'High' && !t.isLive);
+  for (let i = 0; i < merged.length; i++) {
+    const item = merged[i];
+    const cat = getTrackSearchCategory(item);
+    if (cat !== 'Very High') continue;
+    const isPreviewUrl = /p\.scdn\.co|audio-ssl\.itunes\.apple\.com|preview/i.test(item.downloadUrl);
+    if (!isPreviewUrl) continue;
+    const match = highTracks.find(h =>
+      areSongsFuzzyDuplicates(item.name, h.name, item.artist, h.artist, true)
+    );
+    if (match && match.downloadUrl) {
+      const fallbacks = [
+        ...(Array.isArray(match.fallbackUrls) ? match.fallbackUrls : []),
+        item.downloadUrl,
+        ...(Array.isArray(item.fallbackUrls) ? item.fallbackUrls : []),
+      ].filter((url, idx, arr) => Boolean(url) && url !== match.downloadUrl && arr.indexOf(url) === idx);
+      merged[i] = {
+        ...item,
+        downloadUrl: match.downloadUrl,
+        fallbackUrls: fallbacks,
+        qualityUrls: {
+          ...(item.qualityUrls || {}),
+          ...(match.qualityUrls || {}),
+        },
+        duration: match.duration || item.duration,
       };
     }
   }
@@ -1128,6 +1225,7 @@ export function harmonizeCanonicalSongCovers(results: SearchResult[]): SearchRes
   }
 
   return results.map((item) => {
+    if (getTrackSearchCategory(item) === 'OG') return item;
     const baseTitle = extractBaseSongHeadline(item.name);
     const primaryArtist = getPhoneticArtistKey(item.artist);
     if (!baseTitle || !primaryArtist) return item;
@@ -1139,7 +1237,6 @@ export function harmonizeCanonicalSongCovers(results: SearchResult[]): SearchRes
     if (!best || best.score < 35) return item;
 
     const ownScore = scoreCoverAuthenticity(item);
-    // Replace compilation / mismatched / low-authenticity covers with the verified canonical cover for the same song & artist
     if (ownScore < 0 || (best.score >= 85 && ownScore < 50 && item.image !== best.image)) {
       return {
         ...item,

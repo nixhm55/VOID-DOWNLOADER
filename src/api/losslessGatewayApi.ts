@@ -1,32 +1,20 @@
 /**
- * Provider E: Third-Party Lossless & Multi-Gateway Music Connector
+ * Provider E: Lossless Audio Connector
  * Environment variable: VITE_LOSSLESS_API_URLS (optional custom gateway URLs)
  *
- * Deeply integrates multiple third-party lossless sources:
- * 1. Local Vite Multi-Gateway Lossless Aggregator (`/__void_api/lossless-search`):
- *    - HiFi / Tidal Lossless API v2 mirrors (`triton.squid.wtf`, `wolf.qqdl.site`, `maus.qqdl.site`,
- *      `vogel.qqdl.site`, `katze.qqdl.site`, `hund.qqdl.site`, `tidal.kinoplus.online`, `hifi.401658.xyz`)
- *      with base64 `application/vnd.tidal.bts` 16-bit/44.1kHz FLAC manifest decoding
- *    - Archive.org 16-bit & 24-bit FLAC / WAV / ALAC Lossless Masters
- *    - Lossless Master Catalog Resolver
- * 2. User-configured lossless gateways (`VITE_LOSSLESS_API_URLS`)
- * 3. Direct Archive.org FLAC / WAV Lossless Catalog fallback
+ * Strictly returns verified FLAC, ALAC, WAV, or AIFF lossless streams from:
+ * 1. Local Vite Lossless Aggregator (`/__void_api/lossless-search`)
+ * 2. Official Jamendo FLAC API (`audioformat=flac` when client_id is configured)
+ * 3. User-configured lossless gateways (`VITE_LOSSLESS_API_URLS`)
+ *
+ * Never uses unauthorized mirrors or lossy AAC/MP3 fallbacks.
  */
 
 import { type SearchResult, detectTrackQuality, formatProviderLabel } from "./quality";
 
 const GATEWAY_TIMEOUT_MS = 6500;
 
-export const BUILTIN_THIRD_PARTY_LOSSLESS_MIRRORS = [
-  "https://triton.squid.wtf",
-  "https://wolf.qqdl.site",
-  "https://maus.qqdl.site",
-  "https://vogel.qqdl.site",
-  "https://katze.qqdl.site",
-  "https://hund.qqdl.site",
-  "https://tidal.kinoplus.online",
-  "https://hifi.401658.xyz",
-] as const;
+export const BUILTIN_THIRD_PARTY_LOSSLESS_MIRRORS = [] as const;
 
 export interface LosslessGatewayConfigStatus {
   configured: boolean;
@@ -179,12 +167,7 @@ function extractStreamUrlFromTrackPayload(payload: unknown): {
     root.audio?.url ||
     (Array.isArray(root.urls) ? root.urls[0]?.url || root.urls[0] : "");
 
-  if (
-    typeof directUrl !== "string" ||
-    !/^https?:\/\//i.test(directUrl.trim()) ||
-    directUrl.includes("www.tidal.com/track/") ||
-    directUrl.includes("tidal.com/browse/track/")
-  ) {
+  if (typeof directUrl !== "string" || !/^https?:\/\//i.test(directUrl.trim())) {
     return null;
   }
 
@@ -240,15 +223,6 @@ async function resolveTrackStreamFromGateway(
     }
   }
   return null;
-}
-
-function resolveTidalCoverUrl(cover?: string): string {
-  if (!cover || typeof cover !== "string") return "";
-  if (/^https?:\/\//i.test(cover)) return cover;
-  if (/^[0-9a-f-]{32,36}$/i.test(cover)) {
-    return `https://resources.tidal.com/images/${cover.replace(/-/g, "/")}/640x640.jpg`;
-  }
-  return "";
 }
 
 function inferProviderDisplayName(item: any, gatewayBase: string): string {
@@ -328,9 +302,9 @@ async function querySingleLosslessGateway(
               ? item.album.name.trim()
               : "Unknown Album";
 
-      const image =
-        String(item.image || item.cover || item.artwork || item.album?.image || "").trim() ||
-        resolveTidalCoverUrl(item.album?.cover);
+      const image = String(
+        item.image || item.cover || item.artwork || item.album?.image || ""
+      ).trim();
 
       let streamInfo = extractStreamUrlFromTrackPayload(item);
       if (!streamInfo && !controller.signal.aborted) {
@@ -346,6 +320,14 @@ async function querySingleLosslessGateway(
         streamInfo.bitDepth || Number(item.bitDepth || item.bitsPerSample) || undefined;
       const sampleRate = streamInfo.sampleRate || Number(item.sampleRate) || undefined;
 
+      const hasCredibleLosslessMetadata = Boolean(
+        (codec && /\b(flac|alac|wav|aiff|pcm)\b/i.test(codec)) ||
+          (mimeType && /\b(flac|wav|aiff|alac)\b/i.test(mimeType)) ||
+          /\.(flac|wav|aiff|alac)(\?|$)/i.test(streamInfo.url)
+      );
+
+      if (!hasCredibleLosslessMetadata) continue;
+
       const formatHint = [
         streamInfo.format,
         codec,
@@ -355,21 +337,14 @@ async function querySingleLosslessGateway(
         .filter(Boolean)
         .join(" ");
 
-      const hasCredibleLosslessMetadata = Boolean(
-        (codec && /\b(flac|alac|wav|aiff|pcm)\b/i.test(codec)) ||
-          (mimeType && /\b(flac|wav|aiff|alac)\b/i.test(mimeType)) ||
-          /\.(flac|wav|aiff|alac)(\?|$)/i.test(streamInfo.url) ||
-          (bitDepth && bitDepth >= 16 && (!codec || !/\b(mp3|aac|ogg|opus)\b/i.test(codec)))
-      );
-
       const qualityBadge = detectTrackQuality(
         streamInfo.url,
-        hasCredibleLosslessMetadata ? `FLAC ${formatHint}` : formatHint,
+        `FLAC ${formatHint}`,
         bitrate,
         {
           codecHint: codec,
           mimeTypeHint: mimeType,
-          providerVerified: hasCredibleLosslessMetadata || Boolean(bitrate),
+          providerVerified: true,
         }
       );
 
@@ -386,10 +361,10 @@ async function querySingleLosslessGateway(
         source: providerLabel,
         qualityBadge,
         bitrate,
-        codec: codec || (hasCredibleLosslessMetadata ? "FLAC" : undefined),
-        mimeType: mimeType || (hasCredibleLosslessMetadata ? "audio/flac" : undefined),
-        format: formatHint || codec,
-        qualityVerified: hasCredibleLosslessMetadata || Boolean(bitrate),
+        codec: codec || "FLAC",
+        mimeType: mimeType || "audio/flac",
+        format: formatHint || codec || "FLAC Lossless",
+        qualityVerified: true,
         bitDepth,
         sampleRate,
       });
@@ -405,9 +380,8 @@ async function querySingleLosslessGateway(
 }
 
 /**
- * Queries the local Vite Node.js multi-gateway lossless proxy (`/__void_api/lossless-search`),
- * which aggregates third-party HiFi/Tidal FLAC mirrors, Archive.org 16-bit/24-bit FLAC/WAV masters,
- * and lossless master catalogs with zero browser CORS restrictions.
+ * Queries the local Vite Node.js lossless endpoint (`/__void_api/lossless-search`),
+ * which aggregates Archive.org 16-bit/24-bit FLAC/ALAC/WAV masters with zero browser CORS restrictions.
  */
 async function queryLocalLosslessAggregator(
   query: string,
@@ -437,184 +411,62 @@ async function queryLocalLosslessAggregator(
 }
 
 /**
- * Built-in Public FLAC / WAV Lossless Gateway (queries verified lossless FLAC/WAV masters
- * from the Open Archive lossless audio index).
+ * Queries official Jamendo API v3.0 for licensed full-length FLAC lossless tracks when a Jamendo Client ID is configured.
  */
-const NON_MUSIC_LOSSLESS_JUNK_REGEX =
-  /\b(session|studio\s*session|interview|death\s*tape|jonestown|rigveda|rig\s*veda|veda|sermon|lecture|podcast|audiobook|spoken\s*word|speech|broadcast|radio\s*show|field\s*recording|test\s*tone|sound\s*effect|sample\s*pack|prelinger|librivox|fbi\s*no|tape\s*\d+)\b/i;
-
-async function resolveLosslessOfficialArtwork(title: string, artist: string, fallbackQuery: string): Promise<string> {
-  const searchQ = `${title} ${artist !== "Unknown Artist" ? artist : ""}`.trim() || fallbackQuery;
-  if (!searchQ) return "";
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 2400);
-  try {
-    const res = await fetch(
-      `/__void_api/itunes-search?term=${encodeURIComponent(searchQ)}&entity=song&limit=4`,
-      { signal: ctrl.signal }
-    );
-    if (res.ok) {
-      const json: any = await res.json();
-      const match = Array.isArray(json?.results) ? json.results.find((r: any) => r?.artworkUrl100) : null;
-      if (match?.artworkUrl100) {
-        return String(match.artworkUrl100).replace("100x100bb", "600x600bb");
-      }
-    }
-  } catch {
-    /* ignore */
-  } finally {
-    clearTimeout(timer);
-  }
-  return "";
-}
-
-async function queryBuiltInLosslessFlacCatalog(
+async function queryJamendoOfficialFlacCatalog(
   query: string,
   externalSignal?: AbortSignal
 ): Promise<SearchResult[]> {
+  const clientId = String(import.meta.env.VITE_JAMENDO_CLIENT_ID || "").trim();
+  if (!clientId || clientId === "7e6f3dfa") return [];
+
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), GATEWAY_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), 4500);
   const onAbort = () => controller.abort();
   externalSignal?.addEventListener("abort", onAbort, { once: true });
 
   try {
-    const rawWords = query
-      .replace(/[^\p{L}\p{N}\s]+/gu, " ")
-      .trim()
-      .split(/\s+/)
-      .filter(Boolean);
-    const sigTokens = rawWords
-      .map((w) => w.toLowerCase())
-      .filter((w) => w.length >= 2 && w !== "the" && w !== "and");
-    const cleanWords = rawWords.map((w) => {
-      if (w.toLowerCase() === "sadeness") return "(sadeness OR sadness)";
-      if (w.toLowerCase() === "sadness") return "(sadness OR sadeness)";
-      return w;
+    const params = new URLSearchParams({
+      client_id: clientId,
+      format: "json",
+      limit: "6",
+      search: query,
+      audioformat: "flac",
     });
-    if (cleanWords.length === 0) return [];
-    const lucene = `mediatype:(audio) AND format:(Flac OR "24bit Flac" OR WAVE) AND (${cleanWords.join(" AND ")}) AND NOT collection:(librivoxaudio) AND NOT collection:(opensource_audio)`;
-    const params = new URLSearchParams();
-    params.set("q", lucene);
-    params.append("fl[]", "identifier");
-    params.append("fl[]", "title");
-    params.append("fl[]", "creator");
-    params.append("sort[]", "downloads desc");
-    params.set("rows", "4");
-    params.set("page", "1");
-    params.set("output", "json");
-
-    const res = await fetch(`https://archive.org/advancedsearch.php?${params.toString()}`, {
+    const res = await fetch(`https://api.jamendo.com/v3.0/tracks/?${params.toString()}`, {
       signal: controller.signal,
     });
     if (!res.ok) return [];
     const data = await res.json();
-    const docs = Array.isArray(data?.response?.docs) ? data.response.docs : [];
-    if (docs.length === 0) return [];
+    const rows = Array.isArray(data?.results) ? data.results : [];
+    const results: SearchResult[] = [];
 
-    const settled = await Promise.allSettled(
-      docs.slice(0, 4).map(async (doc: any): Promise<SearchResult | null> => {
-        const identifier = String(doc?.identifier || "").trim();
-        if (!identifier) return null;
-        const docTitle = Array.isArray(doc.title) ? doc.title[0] : doc.title;
-        const docCreator = Array.isArray(doc.creator) ? doc.creator[0] : doc.creator;
-        if (NON_MUSIC_LOSSLESS_JUNK_REGEX.test(`${identifier} ${docTitle || ""} ${docCreator || ""}`)) {
-          return null;
-        }
+    for (const row of rows) {
+      const flacUrl = String(row?.audio || row?.audiodownload || "").trim();
+      const duration = Number(row?.duration) || 0;
+      if (!row?.id || !/^https?:\/\//i.test(flacUrl) || (duration > 0 && duration < 35)) continue;
+      if (!/flac/i.test(flacUrl)) continue;
 
-        const metaRes = await fetch(
-          `https://archive.org/metadata/${encodeURIComponent(identifier)}`,
-          { signal: controller.signal }
-        );
-        if (!metaRes.ok) return null;
-        const meta = await metaRes.json();
-        if (
-          meta?.is_dark ||
-          meta?.metadata?.["access-restricted-item"] === "true" ||
-          !Array.isArray(meta?.files)
-        ) {
-          return null;
-        }
-        const flacFile = meta.files.find(
-          (f: any) =>
-            f &&
-            f.private !== "true" &&
-            f.private !== true &&
-            (/\.(flac|wav|aiff|alac)$/i.test(String(f.name || "")) ||
-              /\b(flac|wave?|apple lossless)\b/i.test(String(f.format || "")))
-        );
-        if (!flacFile || !flacFile.name) return null;
-
-        const title =
-          String(flacFile.title || "").trim() ||
-          docTitle ||
-          identifier;
-        const artist =
-          String(flacFile.artist || flacFile.creator || "").trim() ||
-          docCreator ||
-          "Unknown Artist";
-        const album = String(flacFile.album || title || "Lossless Audio").trim();
-
-        if (NON_MUSIC_LOSSLESS_JUNK_REGEX.test(`${title} ${artist} ${album}`)) {
-          return null;
-        }
-
-        const combinedLower = `${title} ${artist} ${album}`.toLowerCase();
-        const matchesQuery = sigTokens.some((tok) => {
-          if (tok === "sadeness" || tok === "sadness") {
-            return combinedLower.includes("sadeness") || combinedLower.includes("sadness");
-          }
-          return combinedLower.includes(tok);
-        });
-        if (!matchesQuery) return null;
-
-        const rawLen = String(flacFile.length || "").trim();
-        let duration = 0;
-        if (/^\d+(\.\d+)?$/.test(rawLen)) duration = Math.round(Number.parseFloat(rawLen));
-        else if (rawLen.includes(":")) {
-          const parts = rawLen.split(":").map(Number);
-          if (parts.length === 2) duration = Math.round(parts[0] * 60 + parts[1]);
-        }
-        if (duration > 0 && (duration < 60 || duration > 960)) return null;
-
-        const mp3Fallback = meta.files.find(
-          (f: any) => f && f.private !== "true" && /\.mp3$/i.test(String(f.name || ""))
-        );
-
-        const buildUrl = (name: string) =>
-          `https://archive.org/download/${encodeURIComponent(identifier)}/${name
-            .split("/")
-            .map(encodeURIComponent)
-            .join("/")}`;
-
-        const flacUrl = buildUrl(String(flacFile.name));
-        const fallbackUrls = mp3Fallback?.name ? [buildUrl(String(mp3Fallback.name))] : undefined;
-
-        const officialCover = await resolveLosslessOfficialArtwork(String(title).trim(), String(artist).trim(), query);
-
-        return {
-          id: `lossless:flac-${identifier}`,
-          name: String(title).trim(),
-          album,
-          artist: String(artist).trim(),
-          image: officialCover,
-          downloadUrl: flacUrl,
-          duration,
-          source: "Lossless Source",
-          qualityBadge: "Lossless",
-          bitrate: 1411,
-          codec: "FLAC",
-          mimeType: "audio/flac",
-          format: "FLAC Lossless",
-          qualityVerified: true,
-          fallbackUrls,
-        };
-      })
-    );
-
-    return settled
-      .filter((r): r is PromiseFulfilledResult<SearchResult | null> => r.status === "fulfilled")
-      .map((r) => r.value)
-      .filter((item): item is SearchResult => item !== null);
+      results.push({
+        id: `jamendo-flac:${row.id}`,
+        name: String(row.name || "Untitled").trim(),
+        album: String(row.album_name || "Jamendo Lossless").trim(),
+        artist: String(row.artist_name || "Jamendo Artist").trim(),
+        image: String(row.album_image || row.image || "").trim(),
+        downloadUrl: flacUrl,
+        duration,
+        source: "Lossless Source",
+        qualityBadge: "Lossless",
+        bitrate: 1411,
+        codec: "FLAC",
+        mimeType: "audio/flac",
+        format: "FLAC Lossless (16-bit/44.1kHz · Jamendo Official)",
+        qualityVerified: true,
+        bitDepth: 16,
+        sampleRate: 44100,
+      });
+    }
+    return results;
   } catch {
     return [];
   } finally {
@@ -623,9 +475,6 @@ async function queryBuiltInLosslessFlacCatalog(
   }
 }
 
-/**
- * Mandatory Third-Party Lossless Gateway Search Connector.
- */
 export async function searchThirdPartyLossless(
   query: string,
   externalSignal?: AbortSignal
@@ -636,7 +485,7 @@ export async function searchThirdPartyLossless(
   const status = parseLosslessGatewayUrls();
   const tasks: Promise<SearchResult[]>[] = [
     queryLocalLosslessAggregator(cleanQuery, externalSignal),
-    queryBuiltInLosslessFlacCatalog(cleanQuery, externalSignal),
+    queryJamendoOfficialFlacCatalog(cleanQuery, externalSignal),
     ...status.endpoints.map((endpoint) =>
       querySingleLosslessGateway(endpoint, cleanQuery, externalSignal)
     ),

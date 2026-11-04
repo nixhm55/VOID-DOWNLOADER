@@ -25,7 +25,12 @@ export default defineConfig({
   },
   server: {
     watch: {
-      ignored: ['**/VOID/**', '**/VOID-BACKEND/**'],
+      ignored: [
+        '**/VOID/**',
+        '**/VOID-BACKEND/**',
+        '**/untitled folder/**',
+        '**/VOID-OG-Upgrade-Bundle/**',
+      ],
     },
   },
 });

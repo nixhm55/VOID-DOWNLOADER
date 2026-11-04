@@ -8,7 +8,7 @@ import {
   type RefObject,
 } from 'react';
 import { Volume1, Volume2, VolumeX } from 'lucide-react';
-import type { SearchResult } from '@/api/quality';
+import type { SearchCategory, SearchResult } from '@/api/quality';
 import type {
   LiquidGlassOrbHandle,
   LiquidGlassOrbState,
@@ -207,6 +207,59 @@ export function formatMinimalArtist(rawArtist?: string): string {
   return primary.length > 26 ? `${primary.slice(0, 26).trim()}…` : primary;
 }
 
+/**
+ * Four required sections:
+ * 1. High
+ * 2. Very High
+ * 3. Lossless
+ * 4. OG (Displayed as exact uppercase "OG")
+ */
+export const SEARCH_CATEGORIES: readonly SearchCategory[] = [
+  'High',
+  'Very High',
+  'Lossless',
+  'OG',
+] as const;
+
+export function SearchCategoryTabs({
+  activeCategory,
+  onSelectCategory,
+}: {
+  activeCategory: SearchCategory;
+  onSelectCategory: (category: SearchCategory) => void;
+}): JSX.Element {
+  return (
+    <div className="search-category-bar" role="tablist" aria-label="Music quality categories">
+      {SEARCH_CATEGORIES.map((category, idx) => {
+        const isSelected = activeCategory === category;
+        const alignClass =
+          idx === 0
+            ? 'is-left'
+            : idx === SEARCH_CATEGORIES.length - 1
+              ? 'is-right'
+              : 'is-center';
+        return (
+          <button
+            key={category}
+            type="button"
+            role="tab"
+            aria-selected={isSelected}
+            data-active={isSelected ? 'true' : 'false'}
+            data-category={category}
+            className={`search-category-tab ${alignClass}${isSelected ? ' is-selected' : ' is-faded'}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelectCategory(category);
+            }}
+          >
+            <span className="search-category-tab-label">{category}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export interface VoidUIProps {
   pageRef: RefObject<HTMLDivElement>;
   searchSectionRef: RefObject<HTMLElement>;
@@ -217,6 +270,8 @@ export interface VoidUIProps {
   searchQuery: string;
   setSearchQuery: (q: string) => void;
   searchResults: SearchResult[];
+  activeCategory: SearchCategory;
+  setActiveCategory: (category: SearchCategory) => void;
   isSearching: boolean;
   isSearchPanelOpen: boolean;
   setIsSearchPanelOpen: (open: boolean) => void;

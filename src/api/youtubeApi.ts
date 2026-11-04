@@ -422,9 +422,17 @@ async function fetchYouTubeFromBackend(
       ? payload
       : payload && typeof payload === "object" && Array.isArray((payload as any).results)
         ? (payload as any).results
-        : payload && typeof payload === "object" && Array.isArray((payload as any).items)
-          ? (payload as any).items
-          : [];
+        : payload &&
+            typeof payload === "object" &&
+            (payload as any).results &&
+            Array.isArray((payload as any).results.High)
+          ? (payload as any).results.High.filter(
+              (item: any) =>
+                !item?.source || String(item.source).toLowerCase() === "youtube"
+            )
+          : payload && typeof payload === "object" && Array.isArray((payload as any).items)
+            ? (payload as any).items
+            : [];
 
     return normalizeYouTubeRows(rows, cleanQuery);
   } catch {

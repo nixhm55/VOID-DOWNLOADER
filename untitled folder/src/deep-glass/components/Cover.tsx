@@ -1,0 +1,165 @@
+import { memo, useEffect, useState } from 'react';
+import { Disc3, ListMusic } from 'lucide-react';
+import {
+  computeAutoFitCoverScale,
+  getCachedCoverScale,
+  getStickyCoverUrl,
+  isCompilationOrSuspectCover,
+  isCoverUrlLoaded,
+  isValidCoverUrl,
+  markCoverUrlLoaded,
+  rememberStickyCover,
+  resolveAndLockTrackCover,
+  stickyCoverListeners,
+} from '../../song-cover/coverProcessing';
+
+export const Cover = memo(
+  function Cover({
+    track,
+    large = false,
+    kind = 'disc',
+    identity: _identity,
+  }: {
+    track?: any;
+    large?: boolean;
+    kind?: 'disc' | 'list';
+    identity?: string;
+  }) {
+    const [, setCoverTick] = useState(0);
+    useEffect(() => {
+      const onCoverLock = () => setCoverTick(t => t + 1);
+      stickyCoverListeners.add(onCoverLock);
+      return () => {
+        stickyCoverListeners.delete(onCoverLock);
+      };
+    }, []);
+
+    const stickyRemoteUrl = track ? getStickyCoverUrl(track) : '';
+    const [resolvedRemoteUrl, setResolvedRemoteUrl] = useState<string>('');
+    const [blobSrc, setBlobSrc] = useState<string | null>(null);
+    const [failedUrls, setFailedUrls] = useState<string[]>([]);
+    const suspectCompilation = Boolean(track && isCompilationOrSuspectCover(track));
+
+    useEffect(() => {
+      setFailedUrls([]);
+      setResolvedRemoteUrl('');
+    }, [track?.id, track?.title, track?.name, track?.artist]);
+
+    useEffect(() => {
+      if (!track) {
+        setBlobSrc(null);
+        return;
+      }
+      const rawBlob =
+        track.artwork instanceof Blob && track.artwork.size >= 512
+          ? track.artwork
+          : track.coverBlob instanceof Blob &&
+              track.coverBlob.size >= 512 &&
+              /^image\//i.test(track.coverBlob.type || '')
+            ? track.coverBlob
+            : null;
+      if (!rawBlob) {
+        setBlobSrc(null);
+        return;
+      }
+      let active = true;
+      const url = URL.createObjectURL(rawBlob);
+      if (active) setBlobSrc(url);
+      return () => {
+        active = false;
+        URL.revokeObjectURL(url);
+      };
+    }, [track, track?.artwork, track?.coverBlob, track?.id]);
+
+    const directValidImg = track && isValidCoverUrl(track.image) ? String(track.image).trim() : '';
+    const candidates = (
+      suspectCompilation
+        ? [resolvedRemoteUrl, stickyRemoteUrl, directValidImg, blobSrc]
+        : [stickyRemoteUrl, resolvedRemoteUrl, directValidImg, blobSrc]
+    ).filter(
+      (u): u is string => typeof u === 'string' && u.length > 0 && !failedUrls.includes(u)
+    );
+    const finalSrc = candidates[0] || null;
+    const [fitScale, setFitScale] = useState<number>(() => getCachedCoverScale(finalSrc, track));
+
+    useEffect(() => {
+      setFitScale(getCachedCoverScale(finalSrc, track));
+    }, [finalSrc, track]);
+
+    useEffect(() => {
+      if (!track) return;
+      if (!suspectCompilation && stickyRemoteUrl && !failedUrls.includes(stickyRemoteUrl)) {
+        rememberStickyCover(track, stickyRemoteUrl);
+        return;
+      }
+      if (!suspectCompilation && finalSrc) return;
+      let active = true;
+      void resolveAndLockTrackCover(track, suspectCompilation).then(url => {
+        if (active && url) {
+          setResolvedRemoteUrl(url);
+        }
+      });
+      return () => {
+        active = false;
+      };
+    }, [track, stickyRemoteUrl, finalSrc, failedUrls, suspectCompilation]);
+
+    const Glyph = kind === 'list' ? ListMusic : Disc3;
+
+    return (
+      <div
+        className={large ? 'cover-large' : 'cover-mini'}
+        data-testid={large ? 'cover-artwork' : 'cover-thumbnail'}
+      >
+        {finalSrc ? (
+          <img
+            src={finalSrc}
+            alt={`${track?.album ?? 'Album'} artwork`}
+            className="loaded"
+            style={{ opacity: 1, transform: fitScale > 1.005 ? `scale(${fitScale})` : undefined }}
+            decoding="async"
+            onLoad={e => {
+              if (isValidCoverUrl(finalSrc) && !suspectCompilation) {
+                rememberStickyCover(track, finalSrc);
+              }
+              markCoverUrlLoaded(finalSrc);
+              void isCoverUrlLoaded(finalSrc);
+              const computed = computeAutoFitCoverScale(
+                e.currentTarget,
+                finalSrc,
+                track,
+                asyncScale => {
+                  setFitScale(prev => (Math.abs(asyncScale - prev) > 0.01 ? asyncScale : prev));
+                }
+              );
+              if (Math.abs(computed - fitScale) > 0.01) setFitScale(computed);
+            }}
+            onError={() => {
+              setFailedUrls(prev => (prev.includes(finalSrc) ? prev : [...prev, finalSrc]));
+              if (track) {
+                void resolveAndLockTrackCover(track, true).then(url => {
+                  if (url && url !== finalSrc) {
+                    setResolvedRemoteUrl(url);
+                  }
+                });
+              }
+            }}
+          />
+        ) : (
+          <Glyph aria-hidden="true" />
+        )}
+      </div>
+    );
+  },
+  (a, b) =>
+    a.large === b.large &&
+    a.kind === b.kind &&
+    a.identity === b.identity &&
+    a.track?.artwork === b.track?.artwork &&
+    a.track?.coverBlob === b.track?.coverBlob &&
+    a.track?.image === b.track?.image &&
+    a.track?.id === b.track?.id &&
+    a.track?.album === b.track?.album &&
+    a.track?.artist === b.track?.artist &&
+    a.track?.source === b.track?.source
+);

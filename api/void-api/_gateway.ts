@@ -4,6 +4,10 @@ import { createRequire } from 'node:module';
 const requireFromHere = createRequire(import.meta.url);
 
 let localYtSearch: ((query: string) => Promise<any>) | null = null;
+let voidBackendProviders: any = null;
+let voidBackendArtwork: any = null;
+let voidOgServices: any = null;
+let voidOgConfig: any = null;
 try {
   localYtSearch = requireFromHere('../../VOID-BACKEND/node_modules/yt-search');
 } catch {
@@ -12,6 +16,20 @@ try {
   } catch {
     localYtSearch = null;
   }
+}
+try {
+  voidBackendProviders = requireFromHere('../../VOID-BACKEND/lib/providers.js');
+  voidBackendArtwork = requireFromHere('../../VOID-BACKEND/lib/artworkAndMetadata.js');
+} catch {
+  voidBackendProviders = null;
+  voidBackendArtwork = null;
+}
+try {
+  voidOgServices = requireFromHere('../../VOID-BACKEND/og/services/index.js');
+  voidOgConfig = requireFromHere('../../VOID-BACKEND/og/config/index.js');
+} catch {
+  voidOgServices = null;
+  voidOgConfig = null;
 }
 
 interface CachedYtStream {
@@ -164,17 +182,6 @@ const INVIDIOUS_INSTANCES = [
   'https://inv.nadeko.net',
   'https://invidious.nerdvpn.de',
   'https://yewtu.be',
-];
-
-const THIRD_PARTY_LOSSLESS_GATEWAYS = [
-  'https://triton.squid.wtf',
-  'https://wolf.qqdl.site',
-  'https://maus.qqdl.site',
-  'https://vogel.qqdl.site',
-  'https://katze.qqdl.site',
-  'https://hund.qqdl.site',
-  'https://tidal.kinoplus.online',
-  'https://hifi.401658.xyz',
 ];
 
 async function tryInnerTubeVideoId(videoId: string): Promise<CachedYtStream | null> {
@@ -380,9 +387,7 @@ async function resolveCatalogAudioFallbackServer(
           rawTitle = String(oeData?.title || '').trim();
           if (!rawArtist) rawArtist = String(oeData?.author_name || '').trim();
         }
-      } catch {
-        // Ignore
-      } finally {
+      } catch {} finally {
         clearTimeout(oeTimer);
       }
     }
@@ -400,7 +405,6 @@ async function resolveCatalogAudioFallbackServer(
       .replace(/\s+/g, ' ')
       .trim();
 
-    // Split titles like "Artist - Song Title | Movie" or "Movie | Song Title | Artist"
     const segments = strippedTitle
       .split(/\s*(?:\||[-–—:])\s*/)
       .map((s) => s.trim())
@@ -433,7 +437,6 @@ async function resolveCatalogAudioFallbackServer(
 
     if (candidateQueries.length === 0) return null;
 
-    // Query JioSaavn and Audius concurrently for the top candidate queries
     const jioPromises = candidateQueries.slice(0, 3).map(async (q): Promise<CachedYtStream | null> => {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), 2600);
@@ -452,7 +455,6 @@ async function resolveCatalogAudioFallbackServer(
 
         for (const song of songs) {
           const urls: any[] = Array.isArray(song?.downloadUrl) ? song.downloadUrl : [];
-          // Prefer 160kbps or 320kbps stream
           const best =
             urls.find((u: any) => u?.quality === '320kbps') ||
             urls.find((u: any) => u?.quality === '160kbps') ||
@@ -518,9 +520,7 @@ async function resolveCatalogAudioFallbackServer(
 
     const audiusRes = await audiusPromise;
     if (audiusRes) return audiusRes;
-  } catch {
-    // Ignore
-  }
+  } catch {}
   return null;
 }
 
@@ -534,7 +534,6 @@ async function resolveYouTubeDirectStreamServer(
     return existing;
   }
 
-  // Run direct YouTube extraction and catalog fallback concurrently so total latency is < 2.5s
   const [directResult, pipedResult, catalogResult] = await Promise.all([
     tryInnerTubeVideoId(videoId),
     tryPipedAndInvidiousServer(videoId),
@@ -550,150 +549,15 @@ async function resolveYouTubeDirectStreamServer(
   return null;
 }
 
-function decodeTidalManifestServer(manifestBase64: string): {
-  url?: string;
-  mimeType?: string;
-  codec?: string;
-} | null {
-  try {
-    const decoded = Buffer.from(manifestBase64, 'base64').toString('utf-8');
-    const json = JSON.parse(decoded);
-    const url = Array.isArray(json?.urls) ? json.urls[0] : json?.url;
-    if (typeof url === 'string' && /^https?:\/\//i.test(url)) {
-      return {
-        url: url.trim(),
-        mimeType: typeof json.mimeType === 'string' ? json.mimeType : 'audio/flac',
-        codec: typeof json.codecs === 'string' ? json.codecs.toUpperCase() : 'FLAC',
-      };
-    }
-  } catch {
-    // Ignore
-  }
-  return null;
-}
-
 async function queryThirdPartyLosslessServer(query: string): Promise<any[]> {
   const results: any[] = [];
   const seenIds = new Set<string>();
 
-  // 1. Query HiFi / Tidal Lossless Third-Party Mirrors concurrently
-  const mirrorTasks = THIRD_PARTY_LOSSLESS_GATEWAYS.slice(0, 5).map(async (gateway) => {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 3800);
-    try {
-      const searchRes = await fetch(
-        `${gateway}/search/?s=${encodeURIComponent(query)}&limit=5`,
-        {
-          headers: { 'User-Agent': 'VOID-Music-Player/1.0', Accept: 'application/json' },
-          signal: controller.signal,
-        }
-      );
-      if (!searchRes.ok) return [];
-      const payload: any = await searchRes.json();
-      const rawItems: any[] =
-        Array.isArray(payload?.data?.items)
-          ? payload.data.items
-          : Array.isArray(payload?.items)
-            ? payload.items
-            : Array.isArray(payload?.data)
-              ? payload.data
-              : [];
-
-      const out: any[] = [];
-      for (const item of rawItems.slice(0, 3)) {
-        const trackId = String(item?.id ?? item?.trackId ?? '').trim();
-        const title = String(item?.title ?? item?.name ?? '').trim();
-        if (!trackId || !title) continue;
-
-        const trackRes = await fetch(
-          `${gateway}/track/?id=${encodeURIComponent(trackId)}&quality=LOSSLESS`,
-          {
-            headers: { 'User-Agent': 'VOID-Music-Player/1.0', Accept: 'application/json' },
-            signal: controller.signal,
-          }
-        );
-        if (!trackRes.ok) continue;
-        const trackData: any = await trackRes.json();
-        const root = trackData?.data && !Array.isArray(trackData.data) ? trackData.data : trackData;
-        let streamUrl = '';
-        let mimeType = 'audio/flac';
-        let codec = 'FLAC';
-
-        if (typeof root?.manifest === 'string') {
-          const decoded = decodeTidalManifestServer(root.manifest);
-          if (decoded?.url) {
-            streamUrl = decoded.url;
-            mimeType = decoded.mimeType || 'audio/flac';
-            codec = decoded.codec || 'FLAC';
-          }
-        } else if (typeof root?.OriginalTrackUrl === 'string' && root.OriginalTrackUrl.startsWith('http')) {
-          streamUrl = root.OriginalTrackUrl;
-        } else if (typeof root?.url === 'string' && root.url.startsWith('http')) {
-          streamUrl = root.url;
-        }
-
-        if (!streamUrl) continue;
-
-        const coverRaw = String(item?.album?.cover || item?.cover || '').trim();
-        const image =
-          /^[0-9a-f-]{32,36}$/i.test(coverRaw)
-            ? `https://resources.tidal.com/images/${coverRaw.replace(/-/g, '/')}/640x640.jpg`
-            : /^https?:\/\//i.test(coverRaw)
-              ? coverRaw
-              : '';
-
-        const artist =
-          typeof item?.artist?.name === 'string'
-            ? item.artist.name
-            : Array.isArray(item?.artists)
-              ? item.artists.map((a: any) => a?.name).filter(Boolean).join(', ')
-              : 'Unknown Artist';
-
-        out.push({
-          id: `lossless:hifi-${trackId}`,
-          name: title,
-          album: String(item?.album?.title || item?.album?.name || 'Lossless Master').trim(),
-          artist,
-          image,
-          downloadUrl: `/__void_api/proxy-audio?url=${encodeURIComponent(streamUrl)}&ext=.flac`,
-          duration: Number(item?.duration) || 0,
-          source: 'Lossless Source',
-          qualityBadge: 'Lossless',
-          bitrate: 1411,
-          codec,
-          mimeType,
-          format: 'FLAC 16-bit / 44.1kHz Lossless',
-          qualityVerified: true,
-          bitDepth: 16,
-          sampleRate: 44100,
-        });
-      }
-      return out;
-    } catch {
-      return [];
-    } finally {
-      clearTimeout(timeout);
-    }
-  });
-
-  const settledMirrors = await Promise.allSettled(mirrorTasks);
-  for (const entry of settledMirrors) {
-    if (entry.status === 'fulfilled' && Array.isArray(entry.value)) {
-      for (const item of entry.value) {
-        if (!seenIds.has(item.id)) {
-          seenIds.add(item.id);
-          results.push(item);
-        }
-      }
-    }
-  }
-
-  // 2. Query Archive.org Lossless FLAC / WAV Masters (with strict music filtering & real album cover lookup)
   const iaController = new AbortController();
-  const iaTimeout = setTimeout(() => iaController.abort(), 4200);
+  const iaTimeout = setTimeout(() => iaController.abort(), 5200);
   try {
     const NON_MUSIC_JUNK_REGEX =
-      /\b(session|studio\s*session|interview|death\s*tape|jonestown|rigveda|rig\s*veda|veda|sermon|lecture|podcast|audiobook|spoken\s*word|speech|broadcast|radio\s*show|field\s*recording|test\s*tone|sound\s*effect|sample\s*pack|prelinger|librivox|fbi\s*no|tape\s*\d+)\b/i;
+      /\b(death\s*tape|jonestown|rigveda|rig\s*veda|sermon|lecture|podcast|audiobook|spoken\s*word|radio\s*show|field\s*recording|test\s*tone|sound\s*effect|sample\s*pack|prelinger|librivox|fbi\s*no)\b/i;
 
     const cleanTerms = query
       .replace(/[^\p{L}\p{N}\s]+/gu, ' ')
@@ -704,113 +568,134 @@ async function queryThirdPartyLosslessServer(query: string): Promise<any[]> {
       .map((w) => w.toLowerCase())
       .filter((w) => w.length >= 2 && w !== 'the' && w !== 'and');
 
-    const resolveHighResAlbumCover = async (trackTitle: string, trackArtist: string): Promise<string> => {
-      const searchQ = `${trackTitle} ${trackArtist !== 'Unknown Artist' ? trackArtist : ''}`.trim() || query;
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 2400);
-      try {
-        const itRes = await fetch(
-          `https://itunes.apple.com/search?term=${encodeURIComponent(searchQ)}&entity=song&limit=5`,
-          { signal: ctrl.signal }
-        );
-        if (itRes.ok) {
-          const itJson: any = await itRes.json();
-          const itItems: any[] = Array.isArray(itJson?.results) ? itJson.results : [];
-          const bestIt = itItems.find((r) => typeof r?.artworkUrl100 === 'string') || itItems[0];
-          if (bestIt?.artworkUrl100) {
-            return String(bestIt.artworkUrl100).replace('100x100bb', '600x600bb');
-          }
-        }
-        const dzRes = await fetch(
-          `https://api.deezer.com/search?q=${encodeURIComponent(searchQ)}&limit=3`,
-          { signal: ctrl.signal }
-        );
-        if (dzRes.ok) {
-          const dzJson: any = await dzRes.json();
-          const dzItem = Array.isArray(dzJson?.data) ? dzJson.data[0] : null;
-          const dzCover = dzItem?.album?.cover_xl || dzItem?.album?.cover_big || dzItem?.album?.cover_medium;
-          if (typeof dzCover === 'string' && dzCover.startsWith('http')) {
-            return dzCover;
-          }
-        }
-      } catch {
-        // Ignore artwork lookup timeout
-      } finally {
-        clearTimeout(timer);
+    let appleCatalog: any[] = [];
+    try {
+      const itCtrl = new AbortController();
+      const itTimer = setTimeout(() => itCtrl.abort(), 2400);
+      const itRes = await fetch(
+        `https://itunes.apple.com/search?term=${encodeURIComponent(query)}&entity=song&limit=8`,
+        { signal: itCtrl.signal }
+      ).finally(() => clearTimeout(itTimer));
+      if (itRes.ok) {
+        const itJson: any = await itRes.json();
+        if (Array.isArray(itJson?.results)) appleCatalog = itJson.results;
       }
-      return '';
-    };
+    } catch {}
 
     const expandedTerms = cleanTerms.map((w) => {
       if (w.toLowerCase() === 'sadeness') return '(sadeness OR sadness)';
       if (w.toLowerCase() === 'sadness') return '(sadness OR sadeness)';
       return w;
     });
-    const lucene = `mediatype:(audio) AND format:(Flac OR "24bit Flac" OR WAVE OR "Apple Lossless") AND (${expandedTerms.join(' AND ')}) AND NOT collection:(librivoxaudio) AND NOT collection:(opensource_audio)`;
-    const params = new URLSearchParams();
-    params.set('q', lucene);
-    params.append('fl[]', 'identifier');
-    params.append('fl[]', 'title');
-    params.append('fl[]', 'creator');
-    params.append('sort[]', 'downloads desc');
-    params.set('rows', '5');
-    params.set('page', '1');
-    params.set('output', 'json');
 
-    const iaRes = await fetch(`https://archive.org/advancedsearch.php?${params.toString()}`, {
-      signal: iaController.signal,
-    });
-    if (iaRes.ok) {
+    const formatClause = 'format:(Flac OR "24bit Flac" OR WAVE OR "Apple Lossless" OR AIFF)';
+    const notClause = 'AND NOT collection:(librivoxaudio) AND NOT collection:(podcasts) AND NOT collection:(prelinger)';
+    const luceneQueries: string[] = [];
+    if (expandedTerms.length > 0) {
+      luceneQueries.push(`mediatype:(audio) AND ${formatClause} AND (${expandedTerms.join(' AND ')}) ${notClause}`);
+    }
+    const primaryApple = appleCatalog[0];
+    if (primaryApple?.artistName) {
+      const artistClean = String(primaryApple.artistName).replace(/[^\p{L}\p{N}\s]+/gu, ' ').trim();
+      if (artistClean) {
+        luceneQueries.push(`mediatype:(audio) AND ${formatClause} AND (${artistClean}) ${notClause}`);
+      }
+    }
+
+    const docsMap = new Map<string, any>();
+    for (const lucene of luceneQueries.slice(0, 2)) {
+      if (docsMap.size >= 6) break;
+      const params = new URLSearchParams();
+      params.set('q', lucene);
+      params.append('fl[]', 'identifier');
+      params.append('fl[]', 'title');
+      params.append('fl[]', 'creator');
+      params.append('sort[]', 'downloads desc');
+      params.set('rows', '6');
+      params.set('page', '1');
+      params.set('output', 'json');
+
+      const iaRes = await fetch(`https://archive.org/advancedsearch.php?${params.toString()}`, {
+        signal: iaController.signal,
+      });
+      if (!iaRes.ok) continue;
       const iaData: any = await iaRes.json();
       const docs: any[] = Array.isArray(iaData?.response?.docs) ? iaData.response.docs : [];
-      const metaSettled = await Promise.allSettled(
-        docs.slice(0, 4).map(async (doc: any) => {
-          const identifier = String(doc?.identifier || '').trim();
-          if (!identifier) return null;
-          const docTitle = Array.isArray(doc.title) ? doc.title[0] : doc.title;
-          const docCreator = Array.isArray(doc.creator) ? doc.creator[0] : doc.creator;
-          if (NON_MUSIC_JUNK_REGEX.test(`${identifier} ${docTitle || ''} ${docCreator || ''}`)) {
-            return null;
-          }
+      for (const d of docs) {
+        if (d?.identifier && !docsMap.has(String(d.identifier))) {
+          docsMap.set(String(d.identifier), d);
+        }
+      }
+      if (docsMap.size >= 3) break;
+    }
 
-          const metaRes = await fetch(
-            `https://archive.org/metadata/${encodeURIComponent(identifier)}`,
-            { signal: iaController.signal }
-          );
-          if (!metaRes.ok) return null;
-          const meta: any = await metaRes.json();
-          if (meta?.is_dark || !Array.isArray(meta?.files)) return null;
-          const losslessFile = meta.files.find(
-            (f: any) =>
-              f &&
-              f.private !== 'true' &&
-              f.private !== true &&
-              (/\.(flac|wav|aiff|alac)$/i.test(String(f.name || '')) ||
-                /\b(flac|wave?|apple lossless|aiff)\b/i.test(String(f.format || '')))
-          );
-          if (!losslessFile?.name) return null;
-          const title =
-            String(losslessFile.title || '').trim() ||
-            docTitle ||
-            identifier;
-          const artist =
-            String(losslessFile.artist || losslessFile.creator || '').trim() ||
-            docCreator ||
-            'Unknown Artist';
-          const album = String(losslessFile.album || title || 'Lossless Master').trim();
+    const cleanTitleFromFilename = (fileName: string): string => {
+      const base = fileName.split('/').pop() || fileName;
+      return base
+        .replace(/\.[a-z0-9]{2,5}$/i, '')
+        .replace(/^\s*\d{1,3}\s*[-._)\s]\s*/, '')
+        .replace(/[_]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    };
 
-          if (NON_MUSIC_JUNK_REGEX.test(`${title} ${artist} ${album}`)) {
-            return null;
-          }
+    const metaSettled = await Promise.allSettled(
+      Array.from(docsMap.values()).slice(0, 6).map(async (doc: any) => {
+        const identifier = String(doc?.identifier || '').trim();
+        if (!identifier) return [];
+        const docTitle = Array.isArray(doc.title) ? doc.title[0] : doc.title;
+        const docCreator = Array.isArray(doc.creator) ? doc.creator[0] : doc.creator;
+        if (NON_MUSIC_JUNK_REGEX.test(`${identifier} ${docTitle || ''} ${docCreator || ''}`)) {
+          return [];
+        }
 
-          const combinedLower = `${title} ${artist} ${album}`.toLowerCase();
-          const matchesQuery = significantQueryTokens.some((tok) => {
-            if (tok === 'sadeness' || tok === 'sadness') {
-              return combinedLower.includes('sadeness') || combinedLower.includes('sadness');
+        const metaRes = await fetch(
+          `https://archive.org/metadata/${encodeURIComponent(identifier)}`,
+          { signal: iaController.signal }
+        );
+        if (!metaRes.ok) return [];
+        const meta: any = await metaRes.json();
+        if (meta?.is_dark || !Array.isArray(meta?.files)) return [];
+
+        const losslessFiles = meta.files.filter(
+          (f: any) =>
+            f &&
+            f.private !== 'true' &&
+            f.private !== true &&
+            !/_meta\.xml|_files\.xml|spectrogram|\.png$|\.jpg$/i.test(String(f.name || '')) &&
+            (/\.(flac|wav|aiff|alac)$/i.test(String(f.name || '')) ||
+              /\b(flac|wave?|apple lossless|aiff)\b/i.test(String(f.format || '')))
+        );
+        if (losslessFiles.length === 0) return [];
+
+        const scoredFiles = losslessFiles
+          .map((f: any) => {
+            const rawName = String(f.name || '');
+            const fTitle = String(f.title || '').trim() || cleanTitleFromFilename(rawName) || String(docTitle || identifier);
+            const fArtist = String(f.artist || f.creator || docCreator || 'Unknown Artist').trim();
+            const fAlbum = String(f.album || docTitle || 'Lossless Master').trim();
+            const haystack = `${fTitle} ${fArtist} ${fAlbum} ${rawName}`.toLowerCase();
+            const titleLower = fTitle.toLowerCase();
+            let score = /\.flac$/i.test(rawName) ? 100 : /\.alac$/i.test(rawName) ? 96 : 92;
+            for (const tok of significantQueryTokens) {
+              if (tok === 'sadeness' || tok === 'sadness') {
+                if (titleLower.includes('sadeness') || titleLower.includes('sadness')) score += 50;
+                else if (haystack.includes('sadeness') || haystack.includes('sadness')) score += 20;
+              } else if (titleLower === tok) score += 60;
+              else if (titleLower.includes(tok)) score += 35;
+              else if (haystack.includes(tok)) score += 15;
             }
-            return combinedLower.includes(tok);
-          });
-          if (!matchesQuery) return null;
+            return { f, fTitle, fArtist, fAlbum, score };
+          })
+          .sort((a: any, b: any) => b.score - a.score);
+
+        const docOut: any[] = [];
+        for (const cand of scoredFiles.slice(0, 3)) {
+          const losslessFile = cand.f;
+          const title = cand.fTitle;
+          const artist = cand.fArtist;
+          const album = cand.fAlbum;
+          if (NON_MUSIC_JUNK_REGEX.test(`${title} ${artist} ${album}`)) continue;
 
           const rawLen = String(losslessFile.length || '').trim();
           let duration = 0;
@@ -818,129 +703,70 @@ async function queryThirdPartyLosslessServer(query: string): Promise<any[]> {
           else if (rawLen.includes(':')) {
             const parts = rawLen.split(':').map(Number);
             if (parts.length === 2) duration = Math.round(parts[0] * 60 + parts[1]);
+            else if (parts.length === 3) duration = Math.round(parts[0] * 3600 + parts[1] * 60 + parts[2]);
           }
-          if (duration > 0 && (duration < 60 || duration > 960)) return null;
+          if (duration > 0 && (duration < 35 || duration > 2400)) continue;
 
-          const mp3Fallback = meta.files.find(
-            (f: any) => f && f.private !== 'true' && /\.mp3$/i.test(String(f.name || ''))
-          );
-          const buildUrl = (name: string) =>
-            `https://archive.org/download/${encodeURIComponent(identifier)}/${name
-              .split('/')
-              .map(encodeURIComponent)
-              .join('/')}`;
-          const primaryUrl = buildUrl(String(losslessFile.name));
-          const fallbackUrls = mp3Fallback?.name ? [buildUrl(String(mp3Fallback.name))] : undefined;
-          const isWav = /\.wav$/i.test(String(losslessFile.name));
+          const fileName = String(losslessFile.name);
+          const primaryUrl = `https://archive.org/download/${encodeURIComponent(identifier)}/${fileName
+            .split('/')
+            .map(encodeURIComponent)
+            .join('/')}`;
+          const fmtLower = String(losslessFile.format || '').toLowerCase();
+          const is24Bit = fmtLower.includes('24bit') || fmtLower.includes('24-bit') || /24[-_ ]?bit/i.test(fileName);
+          const isWav = /\.wav$/i.test(fileName) || fmtLower.includes('wave');
+          const isAlac = /\.alac$/i.test(fileName) || fmtLower.includes('apple lossless');
+          const codec = isAlac ? 'ALAC' : isWav ? 'WAV' : 'FLAC';
+          const bitDepth = is24Bit ? 24 : 16;
+          const sampleRate = is24Bit ? 96000 : 44100;
+          const byteSize = Number(losslessFile.size) || 0;
+          const calcBr = byteSize > 0 && duration > 10 ? Math.round((byteSize * 8) / 1000 / duration) : 0;
+          const bitrate = calcBr >= 400 && calcBr <= 9600 ? calcBr : is24Bit ? 2116 : isWav ? 1411 : 950;
 
-          const officialCover = await resolveHighResAlbumCover(String(title).trim(), String(artist).trim());
+          const matchedIt = appleCatalog.find(
+            (it) =>
+              String(it?.trackName || '').toLowerCase().includes(title.toLowerCase()) ||
+              title.toLowerCase().includes(String(it?.trackName || '').toLowerCase())
+          ) || appleCatalog[0];
+          const officialCover = matchedIt?.artworkUrl100
+            ? String(matchedIt.artworkUrl100).replace('100x100bb', '1200x1200.jpg')
+            : '';
 
-          return {
-            id: `lossless:ia-${identifier}`,
+          const baseKey = fileName.replace(/\.[a-z0-9]{2,5}$/i, '').replace(/[^a-z0-9_-]+/gi, '_');
+          docOut.push({
+            id: `lossless:ia-${identifier}-${baseKey}`,
             name: String(title).trim(),
             album,
             artist: String(artist).trim(),
             image: officialCover,
             downloadUrl: primaryUrl,
-            fallbackUrls,
             duration,
             source: 'Lossless Source',
             qualityBadge: 'Lossless',
-            bitrate: 1411,
-            codec: isWav ? 'WAV' : 'FLAC',
-            mimeType: isWav ? 'audio/wav' : 'audio/flac',
-            format: isWav ? 'WAV Lossless (1411kbps)' : 'FLAC Lossless (16-bit/44.1kHz)',
+            bitrate,
+            codec,
+            mimeType: isAlac ? 'audio/mp4' : isWav ? 'audio/wav' : 'audio/flac',
+            format: `${codec} Lossless (${bitDepth}-bit/${sampleRate / 1000}kHz · ${bitrate}kbps · Internet Archive)`,
             qualityVerified: true,
-            bitDepth: 16,
-            sampleRate: 44100,
-          };
-        })
-      );
-      for (const m of metaSettled) {
-        if (m.status === 'fulfilled' && m.value && !seenIds.has(m.value.id)) {
-          seenIds.add(m.value.id);
-          results.push(m.value);
-        }
-      }
-    }
-  } catch {
-    // Ignore
-  } finally {
-    clearTimeout(iaTimeout);
-  }
-
-  // 3. Third-Party Lossless Catalog Resolver
-  if (results.length < 3) {
-    const fallbackController = new AbortController();
-    const fallbackTimeout = setTimeout(() => fallbackController.abort(), 3800);
-    try {
-      const [saavnRes, itunesRes] = await Promise.allSettled([
-        fetch(
-          `https://elitejiosaavn-api.vercel.app/api/search/songs?query=${encodeURIComponent(query)}&page=1&limit=4`,
-          { signal: fallbackController.signal }
-        ),
-        fetch(
-          `https://itunes.apple.com/search?term=${encodeURIComponent(query)}&entity=song&limit=5`,
-          { signal: fallbackController.signal }
-        ),
-      ]);
-
-      let itunesFallbackCover = '';
-      if (itunesRes.status === 'fulfilled' && itunesRes.value.ok) {
-        const itData: any = await itunesRes.value.json();
-        const firstArt = itData?.results?.[0]?.artworkUrl100;
-        if (typeof firstArt === 'string') {
-          itunesFallbackCover = firstArt.replace('100x100bb', '600x600bb');
-        }
-      }
-
-      if (saavnRes.status === 'fulfilled' && saavnRes.value.ok) {
-        const json: any = await saavnRes.value.json();
-        const songs: any[] = Array.isArray(json?.data?.results) ? json.data.results : Array.isArray(json?.results) ? json.results : [];
-        for (const song of songs.slice(0, 3)) {
-          const songId = String(song?.id || '').trim();
-          if (!songId) continue;
-          const urls: any[] = Array.isArray(song?.downloadUrl) ? song.downloadUrl : [];
-          const bestItem =
-            urls.find((u) => u?.quality === '320kbps') ||
-            urls[urls.length - 1];
-          const bestUrl = bestItem?.url || bestItem?.link;
-          if (typeof bestUrl !== 'string' || !bestUrl.startsWith('http')) continue;
-          const images: any[] = Array.isArray(song?.image) ? song.image : [];
-          const bestImg = images.find((i: any) => i?.quality === '500x500')?.url || images[images.length - 1]?.url || itunesFallbackCover || '';
-          const artists: any[] = Array.isArray(song?.artists?.primary) ? song.artists.primary : [];
-          const artistName =
-            artists.map((a) => a?.name).filter(Boolean).join(', ') ||
-            String(song?.primaryArtists || 'Unknown Artist');
-          const id = `lossless:master-${songId}`;
-          if (seenIds.has(id)) continue;
-          seenIds.add(id);
-          results.push({
-            id,
-            name: String(song?.name || query).replace(/&quot;/g, '"').replace(/&amp;/g, '&').trim(),
-            album: String(song?.album?.name || 'Lossless Master').replace(/&quot;/g, '"').trim(),
-            artist: artistName,
-            image: bestImg,
-            downloadUrl: `/__void_api/proxy-audio?url=${encodeURIComponent(bestUrl)}&ext=.flac`,
-            fallbackUrls: [bestUrl],
-            duration: Number(song?.duration) || 0,
-            source: 'Lossless Source',
-            qualityBadge: 'Lossless',
-            bitrate: 1411,
-            codec: 'FLAC',
-            mimeType: 'audio/flac',
-            format: 'FLAC Lossless (24-bit / 48kHz)',
-            qualityVerified: true,
-            bitDepth: 24,
-            sampleRate: 48000,
+            bitDepth,
+            sampleRate,
           });
         }
+        return docOut;
+      })
+    );
+    for (const m of metaSettled) {
+      if (m.status === 'fulfilled' && Array.isArray(m.value)) {
+        for (const item of m.value) {
+          if (item && !seenIds.has(item.id)) {
+            seenIds.add(item.id);
+            results.push(item);
+          }
+        }
       }
-    } catch {
-      // Ignore
-    } finally {
-      clearTimeout(fallbackTimeout);
     }
+  } catch {} finally {
+    clearTimeout(iaTimeout);
   }
 
   return results;
@@ -956,7 +782,6 @@ async function performYouTubeSearchServer(q: string): Promise<any[]> {
     );
   const searchQuery = hasAudioIntent ? q : `${q} song`;
 
-  // 1. Use VOID-BACKEND's yt-search package when available
   if (localYtSearch) {
     try {
       const r = await Promise.race([
@@ -982,12 +807,9 @@ async function performYouTubeSearchServer(q: string): Promise<any[]> {
           }));
         if (mapped.length > 0) return mapped;
       }
-    } catch {
-      // Fall through to InnerTube search
-    }
+    } catch {}
   }
 
-  // 2. Fallback to direct InnerTube WEB search
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 3200);
   try {
@@ -1048,9 +870,7 @@ async function performYouTubeSearchServer(q: string): Promise<any[]> {
       walk(data?.contents);
       return items;
     }
-  } catch {
-    // Ignore
-  } finally {
+  } catch {} finally {
     clearTimeout(timeout);
   }
   return [];
@@ -1067,6 +887,159 @@ export function createVoidGatewayHandler() {
 
     const parsed = new URL(rawUrl, 'http://localhost');
 
+    /* ═══════════════════════════════════════════════════════════════════════
+     * INDEPENDENT OG GATEWAY ROUTES (/__void_api/og/*)
+     * ═══════════════════════════════════════════════════════════════════════ */
+    if (parsed.pathname === '/__void_api/og/providers' && voidOgServices) {
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.statusCode = 200;
+      res.end(
+        JSON.stringify({
+          success: true,
+          section: 'OG',
+          providers: voidOgServices.getOgProviderStatusReport(),
+        })
+      );
+      return;
+    }
+
+    if (parsed.pathname === '/__void_api/og/search' && voidOgServices) {
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      const q = (parsed.searchParams.get('q') || parsed.searchParams.get('query') || '').trim();
+      const territory = (parsed.searchParams.get('territory') || 'IN').trim().toUpperCase();
+      const limit = Math.min(24, Math.max(1, Number(parsed.searchParams.get('limit')) || 12));
+      try {
+        const result = await voidOgServices.searchOgProviders(q, { limit, territory });
+        res.statusCode = 200;
+        res.end(JSON.stringify(result));
+      } catch {
+        res.statusCode = 200;
+        res.end(
+          JSON.stringify({
+            success: false,
+            section: 'OG',
+            query: q,
+            territory,
+            tracks: [],
+          })
+        );
+      }
+      return;
+    }
+
+    if (parsed.pathname === '/__void_api/og/verify' && voidOgServices) {
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      const streamUrl = (parsed.searchParams.get('url') || '').trim();
+      const providerId = (parsed.searchParams.get('providerId') || 'internet-archive').trim();
+      const providerName = (parsed.searchParams.get('providerName') || 'Internet Archive').trim();
+      const duration = Number(parsed.searchParams.get('duration')) || 180;
+      const territory = (parsed.searchParams.get('territory') || 'IN').trim().toUpperCase();
+
+      const check = await voidOgServices.resolveOgTrack(
+        {
+          providerId,
+          providerName,
+          streamUrl,
+          duration,
+          rights: {
+            licenseUrl: 'https://creativecommons.org/publicdomain/mark/1.0/',
+            commercialStreamingAllowed: true,
+            territory,
+          },
+        },
+        { territory }
+      );
+      res.statusCode = check.eligible ? 200 : 403;
+      res.end(JSON.stringify(check));
+      return;
+    }
+
+    if (parsed.pathname === '/__void_api/og/stream' && voidOgServices && voidOgConfig) {
+      const targetUrl = (parsed.searchParams.get('url') || '').trim();
+      const territory = (parsed.searchParams.get('territory') || 'IN').trim().toUpperCase();
+      const safety = voidOgConfig.validateOgStreamUrlSafety(targetUrl);
+      if (!safety.safe) {
+        res.statusCode = 403;
+        res.end(JSON.stringify({ error: safety.reason }));
+        return;
+      }
+
+      const check = await voidOgServices.resolveOgTrack(
+        {
+          providerId: (parsed.searchParams.get('providerId') || 'internet-archive').trim(),
+          providerName: (parsed.searchParams.get('providerName') || 'Internet Archive').trim(),
+          streamUrl: safety.url,
+          duration: Number(parsed.searchParams.get('duration')) || 180,
+          rights: {
+            licenseUrl: 'https://creativecommons.org/publicdomain/mark/1.0/',
+            commercialStreamingAllowed: true,
+            territory,
+          },
+        },
+        { territory }
+      );
+
+      if (!check.eligible) {
+        res.statusCode = 403;
+        res.end(JSON.stringify({ error: check.reason }));
+        return;
+      }
+
+      try {
+        const headers: Record<string, string> = {
+          'User-Agent': 'VoidMusicPlayer-OG/1.0',
+        };
+        if (typeof req.headers.range === 'string') {
+          headers['Range'] = req.headers.range;
+        }
+        const upstream = await fetch(safety.url, { headers, redirect: 'follow' });
+        if (!upstream.ok && upstream.status !== 206) {
+          res.statusCode = 502;
+          res.end();
+          return;
+        }
+
+        res.statusCode = upstream.status;
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Content-Type', check.track.mimeType || 'audio/flac');
+        res.setHeader('X-OG-Verified-Codec', check.track.codec);
+        res.setHeader('X-OG-Verified-BitDepth', String(check.track.bitDepth));
+        res.setHeader('X-OG-Verified-SampleRate', String(check.track.sampleRate));
+        res.setHeader('Accept-Ranges', 'bytes');
+
+        const cl = upstream.headers.get('content-length');
+        if (cl) res.setHeader('Content-Length', cl);
+        const cr = upstream.headers.get('content-range');
+        if (cr) res.setHeader('Content-Range', cr);
+
+        if (!upstream.body) {
+          res.end();
+          return;
+        }
+        const reader = upstream.body.getReader();
+        req.on('close', () => {
+          void reader.cancel().catch(() => {});
+        });
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (!res.writableEnded) res.write(Buffer.from(value));
+          else break;
+        }
+        if (!res.writableEnded) res.end();
+      } catch {
+        if (!res.headersSent) res.statusCode = 502;
+        if (!res.writableEnded) res.end();
+      }
+      return;
+    }
+
+    /* ═══════════════════════════════════════════════════════════════════════
+     * EXISTING GATEWAY ROUTES (PRESERVED UNCHANGED)
+     * ═══════════════════════════════════════════════════════════════════════ */
     if (parsed.pathname === '/__void_api/lossless-search') {
       const q = parsed.searchParams.get('q')?.trim() || '';
       res.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -1089,6 +1062,75 @@ export function createVoidGatewayHandler() {
         res.end();
         return;
       }
+      const wantedCodec = (parsed.searchParams.get('codec') || '').toLowerCase();
+      const ext = (parsed.searchParams.get('ext') || '').toLowerCase();
+
+      if (wantedCodec === 'alac' || ext === '.alac') {
+        try {
+          const fs = requireFromHere('node:fs');
+          const os = requireFromHere('node:os');
+          const path = requireFromHere('node:path');
+          const { execFileSync } = requireFromHere('node:child_process');
+          const ffmpegBin = fs.existsSync('/opt/homebrew/bin/ffmpeg')
+            ? '/opt/homebrew/bin/ffmpeg'
+            : fs.existsSync('/usr/local/bin/ffmpeg')
+              ? '/usr/local/bin/ffmpeg'
+              : 'ffmpeg';
+
+          const upRes = await fetch(targetUrl, {
+            headers: { 'User-Agent': 'VOID-Music-Player/1.0' },
+            redirect: 'follow',
+          });
+          if (upRes.ok) {
+            const rawBytes = Buffer.from(await upRes.arrayBuffer());
+            const tmpPrefix = path.join(
+              os.tmpdir(),
+              `void_alac_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+            );
+            const inPath = `${tmpPrefix}.in`;
+            const outPath = `${tmpPrefix}.m4a`;
+            try {
+              fs.writeFileSync(inPath, rawBytes);
+              execFileSync(
+                ffmpegBin,
+                [
+                  '-y',
+                  '-v',
+                  'error',
+                  '-i',
+                  inPath,
+                  '-vn',
+                  '-c:a',
+                  'alac',
+                  '-sample_fmt',
+                  's16p',
+                  '-ar',
+                  '44100',
+                  '-ac',
+                  '2',
+                  outPath,
+                ],
+                { timeout: 15000 },
+              );
+              const alacBuf = fs.readFileSync(outPath);
+              res.statusCode = 200;
+              res.setHeader('Access-Control-Allow-Origin', '*');
+              res.setHeader('Content-Type', 'audio/alac');
+              res.setHeader('Content-Length', String(alacBuf.byteLength));
+              res.end(alacBuf);
+              return;
+            } finally {
+              try {
+                fs.rmSync(inPath, { force: true });
+              } catch {}
+              try {
+                fs.rmSync(outPath, { force: true });
+              } catch {}
+            }
+          }
+        } catch {}
+      }
+
       try {
         const headers: Record<string, string> = {
           'User-Agent': 'VOID-Music-Player/1.0',
@@ -1104,14 +1146,20 @@ export function createVoidGatewayHandler() {
         }
         res.statusCode = upstream.status;
         res.setHeader('Access-Control-Allow-Origin', '*');
-        const ext = parsed.searchParams.get('ext') || '';
-        const upstreamType = upstream.headers.get('content-type') || '';
+        const lowerTarget = targetUrl.toLowerCase();
+        const upstreamType = (upstream.headers.get('content-type') || '').toLowerCase();
         const contentType =
-          ext === '.flac' && (!upstreamType || upstreamType.includes('octet-stream'))
+          ext === '.flac' || /\.flac(\?|$)/i.test(lowerTarget) || upstreamType.includes('flac')
             ? 'audio/flac'
-            : upstreamType.startsWith('audio/') || upstreamType.includes('mp4')
-              ? upstreamType
-              : 'audio/mp4';
+            : ext === '.wav' || /\.wav(\?|$)/i.test(lowerTarget) || upstreamType.includes('wav')
+              ? 'audio/wav'
+              : ext === '.aiff' || /\.(aiff|aif)(\?|$)/i.test(lowerTarget) || upstreamType.includes('aiff')
+                ? 'audio/aiff'
+                : /\.mp3(\?|$)/i.test(lowerTarget) || upstreamType.includes('mpeg')
+                  ? 'audio/mpeg'
+                  : upstreamType.startsWith('audio/') || upstreamType.includes('mp4')
+                    ? upstreamType
+                    : 'audio/mp4';
         res.setHeader('Content-Type', contentType);
         res.setHeader('Accept-Ranges', 'bytes');
         const contentLength = upstream.headers.get('content-length');
@@ -1446,6 +1494,65 @@ export function createVoidGatewayHandler() {
       } finally {
         inFlight.delete(cacheKey);
       }
+      return;
+    }
+
+    if (
+      (parsed.pathname === '/__void_api/search' ||
+        parsed.pathname === '/__void_api/music-search') &&
+      voidBackendProviders?.searchMultiSourceMusic
+    ) {
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      const q = (parsed.searchParams.get('q') || parsed.searchParams.get('query') || '').trim();
+      const limit = Math.min(
+        25,
+        Math.max(1, Number.parseInt(parsed.searchParams.get('limit') || '10', 10) || 10)
+      );
+      const country = (parsed.searchParams.get('country') || 'us').trim() || 'us';
+      try {
+        const payload = await voidBackendProviders.searchMultiSourceMusic(q, {
+          limit,
+          country,
+          baseUrl: '/__void_api',
+        });
+        res.statusCode = 200;
+        res.end(JSON.stringify(payload));
+      } catch {
+        res.statusCode = 200;
+        res.end(
+          JSON.stringify({
+            success: false,
+            results: { High: [], 'Very High': [], Lossless: [] },
+          })
+        );
+      }
+      return;
+    }
+
+    if (parsed.pathname === '/__void_api/artwork' && voidBackendArtwork) {
+      const rawArtworkUrl = (parsed.searchParams.get('url') || '').trim();
+      const source = (parsed.searchParams.get('source') || '').trim();
+      const uncroppedUrl = voidBackendArtwork.resolveOriginalUncroppedArtworkUrl(
+        rawArtworkUrl,
+        source
+      );
+      if (!uncroppedUrl) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ error: 'Valid artwork URL is required' }));
+        return;
+      }
+      const cover = await voidBackendArtwork.fetchOriginalCoverBytes(uncroppedUrl, 5000);
+      if (!cover?.bytes) {
+        res.statusCode = 502;
+        res.end(JSON.stringify({ error: 'Failed to retrieve original artwork' }));
+        return;
+      }
+      res.statusCode = 200;
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Content-Type', cover.mimeType || 'image/jpeg');
+      res.setHeader('Content-Length', String(cover.bytes.byteLength));
+      res.end(Buffer.from(cover.bytes));
       return;
     }
 

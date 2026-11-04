@@ -26,6 +26,7 @@ import { DgReveal } from '@/motion';
 import {
   SEARCH_BUBBLE_MATERIAL_PROPS,
   SLIDER_BUBBLE_MATERIAL_PROPS,
+  SearchCategoryTabs,
   VoidGlyph,
   VolumeControl,
   formatDuration,
@@ -46,6 +47,8 @@ export function DesktopUI({
   searchQuery,
   setSearchQuery,
   searchResults,
+  activeCategory,
+  setActiveCategory,
   isSearching,
   setIsSearchPanelOpen,
   searchHistory,
@@ -259,11 +262,22 @@ export function DesktopUI({
                     </div>
                   </div>
                 ) : hasQuery ? (
-                  <div ref={resultsListRef} className="search-results-list">
-                    {searchResults.length === 0 ? (
-                      <div className="search-status-empty">
-                        {isSearching ? 'Searching songs…' : 'No matching songs found'}
-                      </div>
+                  <>
+                    <SearchCategoryTabs
+                      activeCategory={activeCategory}
+                      onSelectCategory={setActiveCategory}
+                    />
+                    <div ref={resultsListRef} className="search-results-list">
+                      {searchResults.length === 0 ? (
+                        <div className="search-status-empty">
+                          {isSearching
+                            ? activeCategory === 'OG'
+                              ? 'Verifying genuine lossless OG streams…'
+                              : 'Searching songs…'
+                            : activeCategory === 'OG'
+                              ? 'No verified lossless & rights-cleared OG tracks found for this query'
+                              : 'No matching songs found'}
+                        </div>
                     ) : (
                       searchResults.map((item, idx) => {
                         const rowKey = `${item.source || 'track'}:${item.id}`;
@@ -271,6 +285,8 @@ export function DesktopUI({
                         const dlState = downloadingIds[rowKey];
                         const durText = formatDuration(item.duration);
                         const artistText = formatMinimalArtist(item.artist);
+                        const isOgItem = activeCategory === 'OG' || item.category === 'OG';
+                        const canDownload = !isOgItem || item.ogDownloadAllowed !== false;
 
                         return (
                           <DgReveal
@@ -292,6 +308,19 @@ export function DesktopUI({
                                 <span className="search-result-artist" title={item.artist}>
                                   {artistText}
                                 </span>
+                                {isOgItem && item.ogSpecBadge && (
+                                  <span
+                                    className="og-verified-spec-badge"
+                                    title={`${item.ogSpecBadge} · ${item.source || ''}${item.qualityClassification ? ` · ${item.qualityClassification}` : ''}`}
+                                  >
+                                    {item.ogSpecBadge}
+                                  </span>
+                                )}
+                                {isOgItem && item.source && (
+                                  <span className="og-verified-provider-badge" title={item.album}>
+                                    {item.source}
+                                  </span>
+                                )}
                                 {durText && (
                                   <span className="search-result-duration">{durText}</span>
                                 )}
@@ -311,61 +340,64 @@ export function DesktopUI({
                               >
                                 {active ? <Pause /> : <Play />}
                               </button>
-                              <button
-                                type="button"
-                                className={`download-icon-button${dlState === 'loading' ? ' is-downloading' : ''}${dlState === 'done' ? ' is-download-success' : ''}`}
-                                disabled={dlState === 'loading' || dlState === 'done'}
-                                aria-label={
-                                  dlState === 'done'
-                                    ? `Downloaded ${item.name}`
-                                    : `Download ${item.name}`
-                                }
-                                title={
-                                  dlState === 'done'
-                                    ? 'Downloaded'
-                                    : dlState === 'loading'
-                                      ? 'Saving offline…'
-                                      : `Save ${item.name} for offline listening`
-                                }
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  void handleDownloadTrack(item);
-                                }}
-                              >
-                                <svg
-                                  width="13"
-                                  height="15"
-                                  viewBox="0 0 13 15"
-                                  fill="none"
-                                  aria-hidden="true"
-                                  style={{ display: 'block', overflow: 'visible' }}
+                              {canDownload && (
+                                <button
+                                  type="button"
+                                  className={`download-icon-button${dlState === 'loading' ? ' is-downloading' : ''}${dlState === 'done' ? ' is-download-success' : ''}`}
+                                  disabled={dlState === 'loading' || dlState === 'done'}
+                                  aria-label={
+                                    dlState === 'done'
+                                      ? `Downloaded ${item.name}`
+                                      : `Download ${item.name}`
+                                  }
+                                  title={
+                                    dlState === 'done'
+                                      ? 'Downloaded'
+                                      : dlState === 'loading'
+                                        ? 'Saving offline…'
+                                        : `Save ${item.name} for offline listening`
+                                  }
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    void handleDownloadTrack(item);
+                                  }}
                                 >
-                                  {dlState === 'done' ? (
-                                    <path
-                                      className="download-success-check"
-                                      d="M2.1 7.7L5.1 10.5L11 3.8"
-                                      stroke="currentColor"
-                                      strokeWidth="1.8"
-                                      strokeLinecap="round"
-                                      strokeLinejoin="round"
-                                    />
-                                  ) : (
-                                    <path
-                                      d="M6.5 1.5V10.5M2.9 7.2L6.5 10.8L10.1 7.2M2.2 13H10.8"
-                                      stroke="currentColor"
-                                      strokeWidth="1.35"
-                                      strokeLinecap="round"
-                                      strokeLinejoin="round"
-                                    />
-                                  )}
-                                </svg>
-                              </button>
+                                  <svg
+                                    width="13"
+                                    height="15"
+                                    viewBox="0 0 13 15"
+                                    fill="none"
+                                    aria-hidden="true"
+                                    style={{ display: 'block', overflow: 'visible' }}
+                                  >
+                                    {dlState === 'done' ? (
+                                      <path
+                                        className="download-success-check"
+                                        d="M2.1 7.7L5.1 10.5L11 3.8"
+                                        stroke="currentColor"
+                                        strokeWidth="1.8"
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                      />
+                                    ) : (
+                                      <path
+                                        d="M6.5 1.5V10.5M2.9 7.2L6.5 10.8L10.1 7.2M2.2 13H10.8"
+                                        stroke="currentColor"
+                                        strokeWidth="1.35"
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                      />
+                                    )}
+                                  </svg>
+                                </button>
+                              )}
                             </div>
                           </DgReveal>
                         );
                       })
                     )}
-                  </div>
+                    </div>
+                  </>
                 ) : (
                   searchHistory.length > 0 && (
                     <div
@@ -476,6 +508,9 @@ export function DesktopUI({
                       >
                         {formatMinimalArtist(activeTrack.artist)}
                       </span>
+                      {activeTrack.category === 'OG' && activeTrack.ogSpecBadge && (
+                        <span className="og-verified-spec-badge">{activeTrack.ogSpecBadge}</span>
+                      )}
                     </span>
                   </span>
                 </div>
@@ -572,54 +607,56 @@ export function DesktopUI({
                     }}
                     onToggleMute={() => setMuted((prev) => !prev)}
                   />
-                  <button
-                    type="button"
-                    className={`icon-button extra-fade download-icon-button${activeTrackDlState === 'loading' ? ' is-downloading' : ''}${activeTrackDlState === 'done' ? ' is-download-success' : ''}`}
-                    disabled={
-                      activeTrackDlState === 'loading' || activeTrackDlState === 'done'
-                    }
-                    aria-label={
-                      activeTrackDlState === 'done'
-                        ? `Downloaded ${activeTrack.name}`
-                        : `Download ${activeTrack.name}`
-                    }
-                    title={
-                      activeTrackDlState === 'done'
-                        ? 'Downloaded'
-                        : activeTrackDlState === 'loading'
-                          ? 'Saving offline…'
-                          : `Save ${activeTrack.name} for offline listening`
-                    }
-                    onClick={() => void handleDownloadTrack(activeTrack)}
-                  >
-                    <svg
-                      width="14"
-                      height="16"
-                      viewBox="0 0 13 15"
-                      fill="none"
-                      aria-hidden="true"
-                      style={{ display: 'block', overflow: 'visible' }}
+                  {(!activeTrack || activeTrack.category !== 'OG' || activeTrack.ogDownloadAllowed !== false) && (
+                    <button
+                      type="button"
+                      className={`icon-button extra-fade download-icon-button${activeTrackDlState === 'loading' ? ' is-downloading' : ''}${activeTrackDlState === 'done' ? ' is-download-success' : ''}`}
+                      disabled={
+                        activeTrackDlState === 'loading' || activeTrackDlState === 'done'
+                      }
+                      aria-label={
+                        activeTrackDlState === 'done'
+                          ? `Downloaded ${activeTrack.name}`
+                          : `Download ${activeTrack.name}`
+                      }
+                      title={
+                        activeTrackDlState === 'done'
+                          ? 'Downloaded'
+                          : activeTrackDlState === 'loading'
+                            ? 'Saving offline…'
+                            : `Save ${activeTrack.name} for offline listening`
+                      }
+                      onClick={() => void handleDownloadTrack(activeTrack)}
                     >
-                      {activeTrackDlState === 'done' ? (
-                        <path
-                          className="download-success-check"
-                          d="M2.1 7.7L5.1 10.5L11 3.8"
-                          stroke="currentColor"
-                          strokeWidth="1.8"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        />
-                      ) : (
-                        <path
-                          d="M6.5 1.5V10.5M2.9 7.2L6.5 10.8L10.1 7.2M2.2 13H10.8"
-                          stroke="currentColor"
-                          strokeWidth="1.35"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        />
-                      )}
-                    </svg>
-                  </button>
+                      <svg
+                        width="14"
+                        height="16"
+                        viewBox="0 0 13 15"
+                        fill="none"
+                        aria-hidden="true"
+                        style={{ display: 'block', overflow: 'visible' }}
+                      >
+                        {activeTrackDlState === 'done' ? (
+                          <path
+                            className="download-success-check"
+                            d="M2.1 7.7L5.1 10.5L11 3.8"
+                            stroke="currentColor"
+                            strokeWidth="1.8"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                        ) : (
+                          <path
+                            d="M6.5 1.5V10.5M2.9 7.2L6.5 10.8L10.1 7.2M2.2 13H10.8"
+                            stroke="currentColor"
+                            strokeWidth="1.35"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                        )}
+                      </svg>
+                    </button>
+                  )}
                 </div>
               </SoapBubbleSurface>
             </SoapBubbleMaterial>

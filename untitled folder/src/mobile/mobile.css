@@ -1,0 +1,46 @@
+/* Mobile UI specific styles (viewport <= 768px) */
+[data-ui-mode='mobile'] .topographic-terrain-content {
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.void-mobile-stage {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  padding: 1.25rem 1rem calc(2rem + env(safe-area-inset-bottom, 0px));
+  perspective: 960px;
+}
+
+.void-mobile-search-section {
+  position: relative;
+  z-index: 10;
+  margin-inline: auto;
+  width: 100%;
+  max-width: 24.5rem;
+  margin-top: clamp(4.5rem, 13vh, 6.5rem);
+  font-size: 18px;
+  transform: translateZ(22px);
+  transform-style: preserve-3d;
+}
+
+.void-mobile-search-section .search-occluder-wrap {
+  position: relative;
+  width: 100%;
+  border-radius: 9999px;
+  box-shadow:
+    0 22px 50px -8px rgba(0, 0, 0, 0.92),
+    0 12px 24px -6px rgba(0, 0, 0, 0.78),
+    0 0 28px -6px rgba(255, 255, 255, 0.06);
+}
+
+.void-mobile-search-section .search-results-panel {
+  box-shadow:
+    0 28px 64px -10px rgba(0, 0, 0, 0.94),
+    0 14px 30px -8px rgba(0, 0, 0, 0.82);
+}
+
+.void-mobile-stage .search-results-list {
+  max-height: min(64vh, calc(100dvh - 11.5rem));
+}

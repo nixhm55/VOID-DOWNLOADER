@@ -9,8 +9,15 @@ import {
 } from 'react';
 import {
   formatProviderLabel,
+  getTrackSearchCategory,
+  type SearchCategory,
   type SearchResult,
 } from '@/api/quality';
+import {
+  isEligibleOgTrack,
+  verifyOgBinaryHeaderBytes,
+  verifyOgTrackAtPlaybackTime,
+} from '@/api/ogApi';
 import { searchAllProviders } from '@/api/unifiedSearch';
 import {
   extractYouTubeIdFromTrack,
@@ -24,7 +31,11 @@ import {
 import { DesktopUI } from '@/desktop';
 import { MobileUI } from '@/mobile';
 import { prepareDownloadArtwork } from '@/song-cover/downloadCoverArtwork';
-import { embedMetadataAndCoverIntoAudio } from '@/song-cover/embedAudioMetadata';
+import {
+  convertAudioBlobToAlacM4a,
+  embedMetadataAndCoverIntoAudio,
+  probeAudioBlob,
+} from '@/song-cover/embedAudioMetadata';
 import { putVoidDownload } from '@/song-cover/downloadsDb';
 import type { VoidUIProps } from '@/types/voidUI';
 
@@ -32,12 +43,11 @@ export interface AppProps {
   readonly children?: ReactNode;
 }
 
-// Loads YouTube's Official IFrame Player API script once and resolves with global YT object (same as VOID)
 let ytApiPromise: Promise<any> | null = null;
 function loadYouTubeIframeApi(): Promise<any> {
   const w = window as any;
   if (w.YT?.Player) return Promise.resolve(w.YT);
-  if (ytApiPromise) return ytApiPromise;
+  if (ytApiPromise) return Promise.resolve(ytApiPromise);
   ytApiPromise = new Promise((resolve, reject) => {
     const previous = w.onYouTubeIframeAPIReady;
     w.onYouTubeIframeAPIReady = () => {
@@ -81,6 +91,37 @@ async function resolveTrackStreamCandidates(
   item: SearchResult,
   forDownload = false,
 ): Promise<string[]> {
+  const cat = getTrackSearchCategory(item);
+
+  // CRITICAL OG ISOLATION: OG tracks only use their verified lossless stream URL — never fallbacks
+  if (cat === 'OG') {
+    if (!isEligibleOgTrack(item)) return [];
+    const check = await verifyOgTrackAtPlaybackTime(item);
+    if (!check.eligible || !check.streamUrl) return [];
+    return [check.streamUrl, item.downloadUrl].filter(Boolean);
+  }
+
+  const isLosslessCategory = cat === 'Lossless';
+  if (isLosslessCategory) {
+    const ordered = forDownload
+      ? [
+          item.downloadUrl,
+          ...(Array.isArray(item.fallbackUrls) ? item.fallbackUrls : []),
+        ]
+      : [
+          ...(Array.isArray(item.fallbackUrls) ? item.fallbackUrls : []),
+          item.downloadUrl,
+        ];
+    return Array.from(
+      new Set(
+        ordered.filter(
+          (u): u is string =>
+            Boolean(u && !u.startsWith('yt-stream://') && !u.includes('void-backend')),
+        ),
+      ),
+    );
+  }
+
   const preferredQualityUrl = item.qualityUrls?.['very-high'];
   const ytId = extractYouTubeIdFromTrack(item);
   if (ytId) {
@@ -115,9 +156,6 @@ async function resolveTrackStreamCandidates(
   );
 }
 
-/**
- * Smooth wheel inertia scrolling matching VOID's Lenis feel (lerp: 0.1, wheelMultiplier: 0.9)
- */
 function useSmoothWheelScroll(scrollerRef: { current: HTMLElement | null }, enabled: boolean) {
   useEffect(() => {
     const el = scrollerRef.current;
@@ -189,10 +227,10 @@ export function App({ children }: AppProps): JSX.Element {
 
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [activeCategory, setActiveCategory] = useState<SearchCategory>('High');
   const [isSearching, setIsSearching] = useState(false);
   const [isSearchPanelOpen, setIsSearchPanelOpen] = useState(false);
 
-  // Search History state (exact from VOID/src/App.tsx)
   const [searchHistory, setSearchHistory] = useState<string[]>(() => {
     try {
       return JSON.parse(localStorage.getItem('void-search-history') || '[]');
@@ -210,7 +248,7 @@ export function App({ children }: AppProps): JSX.Element {
       try {
         localStorage.setItem('void-search-history', JSON.stringify(updated));
       } catch {
-        // Ignore storage errors
+        // Ignore
       }
       return updated;
     });
@@ -223,14 +261,13 @@ export function App({ children }: AppProps): JSX.Element {
       try {
         localStorage.setItem('void-search-history', JSON.stringify(updated));
       } catch {
-        // Ignore storage errors
+        // Ignore
       }
       if (updated.length <= 4) setHistoryExpanded(false);
       return updated;
     });
   }, []);
 
-  // Playback & Mini Player state
   const [activeTrack, setActiveTrack] = useState<SearchResult | null>(null);
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [isPlayingAudio, setIsPlayingAudio] = useState(false);
@@ -246,12 +283,10 @@ export function App({ children }: AppProps): JSX.Element {
   volumeRef.current = { volume, muted, repeat };
   const playRelativeRef = useRef<(dir: number) => void>(() => {});
 
-  // Pre-warm YouTube IFrame API on mount so YouTube tracks play without script-load delay
   useEffect(() => {
     void loadYouTubeIframeApi().catch(() => {});
   }, []);
 
-  // Exact Voice Search State & Signal refs ported from VOID/src/App.tsx
   const voiceOrbRef = useRef<LiquidGlassOrbHandle>(null);
   const [voiceOrbOpen, setVoiceOrbOpen] = useState(false);
   const [voiceOrbState, setVoiceOrbState] = useState<LiquidGlassOrbState>('idle');
@@ -342,7 +377,6 @@ export function App({ children }: AppProps): JSX.Element {
     setVoiceOrbState('idle');
   }, [stopVoiceSearchResources]);
 
-  // Synchronized transition: Listening -> Searching (lens) -> Success (tick) -> Reveal Results
   const triggerVoiceSearchCompletion = useCallback(() => {
     if (voiceFinishTimerRef.current) {
       window.clearTimeout(voiceFinishTimerRef.current);
@@ -385,121 +419,111 @@ export function App({ children }: AppProps): JSX.Element {
     setVoiceOrbOpen(true);
     setVoiceOrbState('listening');
 
-    // Defer microphone & speech hardware initialization by 1 animation frame so the GPU entrance transition starts with 0ms frame drop
     window.requestAnimationFrame(() => {
-    // 1. Live Microphone Audio Envelope (0..1) via Web Audio API AnalyserNode (exact from VOID)
-    if (typeof navigator !== 'undefined' && navigator.mediaDevices?.getUserMedia) {
-      navigator.mediaDevices
-        .getUserMedia({ audio: true })
-        .then((stream) => {
-          micStreamRef.current = stream;
-          const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-          if (!AudioCtx) return;
-          const ctx = new AudioCtx();
-          micAudioCtxRef.current = ctx;
-          const source = ctx.createMediaStreamSource(stream);
-          const analyser = ctx.createAnalyser();
-          analyser.fftSize = 256;
-          analyser.smoothingTimeConstant = 0.65;
-          source.connect(analyser);
-          const data = new Uint8Array(analyser.frequencyBinCount);
-          let prevLvl = 0;
-          const pump = () => {
-            analyser.getByteFrequencyData(data);
-            let sum = 0;
-            let lowSum = 0;
-            let midSum = 0;
-            let highSum = 0;
-            const n = data.length;
-            const lowEnd = Math.max(1, Math.floor(n * 0.18));
-            const midEnd = Math.max(lowEnd + 1, Math.floor(n * 0.55));
-            for (let i = 0; i < n; i++) {
-              const v = data[i];
-              sum += v;
-              if (i < lowEnd) lowSum += v;
-              else if (i < midEnd) midSum += v;
-              else highSum += v;
-            }
-            const avg = sum / (n * 255);
-            const lvl = Math.min(1, avg * 3.1);
-            const low = Math.min(1, (lowSum / (lowEnd * 255)) * 2.6);
-            const mid = Math.min(1, (midSum / ((midEnd - lowEnd) * 255)) * 3.2);
-            const high = Math.min(1, (highSum / ((n - midEnd) * 255)) * 3.8);
-            const onset = Math.min(1, Math.max(0, (lvl - prevLvl) * 4.5));
-            prevLvl = lvl * 0.7 + prevLvl * 0.3;
+      if (typeof navigator !== 'undefined' && navigator.mediaDevices?.getUserMedia) {
+        navigator.mediaDevices
+          .getUserMedia({ audio: true })
+          .then((stream) => {
+            micStreamRef.current = stream;
+            const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+            if (!AudioCtx) return;
+            const ctx = new AudioCtx();
+            micAudioCtxRef.current = ctx;
+            const source = ctx.createMediaStreamSource(stream);
+            const analyser = ctx.createAnalyser();
+            analyser.fftSize = 256;
+            analyser.smoothingTimeConstant = 0.65;
+            source.connect(analyser);
+            const data = new Uint8Array(analyser.frequencyBinCount);
+            let prevLvl = 0;
+            const pump = () => {
+              analyser.getByteFrequencyData(data);
+              let sum = 0;
+              let lowSum = 0;
+              let midSum = 0;
+              let highSum = 0;
+              const n = data.length;
+              const lowEnd = Math.max(1, Math.floor(n * 0.18));
+              const midEnd = Math.max(lowEnd + 1, Math.floor(n * 0.55));
+              for (let i = 0; i < n; i++) {
+                const v = data[i];
+                sum += v;
+                if (i < lowEnd) lowSum += v;
+                else if (i < midEnd) midSum += v;
+                else highSum += v;
+              }
+              const avg = sum / (n * 255);
+              const lvl = Math.min(1, avg * 3.1);
+              const low = Math.min(1, (lowSum / (lowEnd * 255)) * 2.6);
+              const mid = Math.min(1, (midSum / ((midEnd - lowEnd) * 255)) * 3.2);
+              const high = Math.min(1, (highSum / ((n - midEnd) * 255)) * 3.8);
+              const onset = Math.min(1, Math.max(0, (lvl - prevLvl) * 4.5));
+              prevLvl = lvl * 0.7 + prevLvl * 0.3;
 
-            voiceAudioLevelRef.current = lvl;
-            voiceSignalRef.current = {
-              level: Math.max(lvl, voiceSignalRef.current.level * 0.82),
-              onset: Math.max(onset, voiceSignalRef.current.onset * 0.78),
-              low: Math.max(low, voiceSignalRef.current.low * 0.82),
-              mid: Math.max(mid, voiceSignalRef.current.mid * 0.82),
-              high: Math.max(high, voiceSignalRef.current.high * 0.82),
+              voiceAudioLevelRef.current = lvl;
+              voiceSignalRef.current = {
+                level: Math.max(lvl, voiceSignalRef.current.level * 0.82),
+                onset: Math.max(onset, voiceSignalRef.current.onset * 0.78),
+                low: Math.max(low, voiceSignalRef.current.low * 0.82),
+                mid: Math.max(mid, voiceSignalRef.current.mid * 0.82),
+                high: Math.max(high, voiceSignalRef.current.high * 0.82),
+              };
+              micRafRef.current = window.requestAnimationFrame(pump);
             };
             micRafRef.current = window.requestAnimationFrame(pump);
-          };
-          micRafRef.current = window.requestAnimationFrame(pump);
-        })
-        .catch(() => {
-          // Fallback simulated voice envelope handled by LiquidGlassOrb
-        });
-    }
-
-    // 2. Live Speech-to-Text capture directly into searchQuery (exact from VOID)
-    const SpeechRec =
-      typeof window !== 'undefined'
-        ? (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-        : null;
-    if (SpeechRec) {
-      try {
-        const rec = new SpeechRec();
-        speechRecRef.current = rec;
-        rec.continuous = true;
-        rec.interimResults = true;
-        rec.lang = 'en-US';
-
-        rec.onresult = (event: any) => {
-          let transcript = '';
-          let hasFinal = false;
-          for (let i = 0; i < event.results.length; i++) {
-            const res = event.results[i];
-            transcript += res[0]?.transcript || '';
-            if (res.isFinal) hasFinal = true;
-          }
-          voiceSignalRef.current = {
-            level: Math.max(voiceSignalRef.current.level, 0.78),
-            onset: 0.92,
-            low: Math.max(voiceSignalRef.current.low, 0.68),
-            mid: Math.max(voiceSignalRef.current.mid, 0.85),
-            high: Math.max(voiceSignalRef.current.high, 0.74),
-          };
-          const cleaned = transcript.trim();
-          if (cleaned) {
-            setSearchQuery(cleaned);
-            setIsSearchPanelOpen(true);
-            setVoiceOrbState('listening');
-            if (voiceFinishTimerRef.current) {
-              window.clearTimeout(voiceFinishTimerRef.current);
-            }
-            voiceFinishTimerRef.current = window.setTimeout(
-              () => {
-                handleSaveHistory(cleaned);
-                triggerVoiceSearchCompletion();
-              },
-              hasFinal ? 1100 : 1800,
-            );
-          }
-        };
-
-        rec.onerror = () => {
-          // Keep orb open so user can still see animation or speak/type
-        };
-
-        rec.start();
-      } catch {
-        // Ignore duplicate start errors
+          })
+          .catch(() => {});
       }
-    }
+
+      const SpeechRec =
+        typeof window !== 'undefined'
+          ? (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+          : null;
+      if (SpeechRec) {
+        try {
+          const rec = new SpeechRec();
+          speechRecRef.current = rec;
+          rec.continuous = true;
+          rec.interimResults = true;
+          rec.lang = 'en-US';
+
+          rec.onresult = (event: any) => {
+            let transcript = '';
+            let hasFinal = false;
+            for (let i = 0; i < event.results.length; i++) {
+              const res = event.results[i];
+              transcript += res[0]?.transcript || '';
+              if (res.isFinal) hasFinal = true;
+            }
+            voiceSignalRef.current = {
+              level: Math.max(voiceSignalRef.current.level, 0.78),
+              onset: 0.92,
+              low: Math.max(voiceSignalRef.current.low, 0.68),
+              mid: Math.max(voiceSignalRef.current.mid, 0.85),
+              high: Math.max(voiceSignalRef.current.high, 0.74),
+            };
+            const cleaned = transcript.trim();
+            if (cleaned) {
+              setSearchQuery(cleaned);
+              setIsSearchPanelOpen(true);
+              setVoiceOrbState('listening');
+              if (voiceFinishTimerRef.current) {
+                window.clearTimeout(voiceFinishTimerRef.current);
+              }
+              voiceFinishTimerRef.current = window.setTimeout(
+                () => {
+                  handleSaveHistory(cleaned);
+                  triggerVoiceSearchCompletion();
+                },
+                hasFinal ? 1100 : 1800,
+              );
+            }
+          };
+
+          rec.onerror = () => {};
+          rec.start();
+        } catch {}
+      }
     });
   }, [handleSaveHistory, stopVoiceSearchResources, triggerVoiceSearchCompletion]);
 
@@ -524,7 +548,6 @@ export function App({ children }: AppProps): JSX.Element {
     voiceOrbState,
   ]);
 
-  // Close the search results/history panel when clicking or touching outside the search section
   useEffect(() => {
     if (!isSearchPanelOpen && !voiceOrbOpen) return;
     const handlePointerDownOutside = (event: PointerEvent) => {
@@ -559,7 +582,6 @@ export function App({ children }: AppProps): JSX.Element {
 
   useEffect(() => () => stopVoiceSearchResources(), [stopVoiceSearchResources]);
 
-  // Live debounced multi-provider search ordered strictly: 1. JioSaavn, 2. Jamendo, 3. YouTube
   useEffect(() => {
     const clean = searchQuery.trim();
     if (!clean) {
@@ -599,7 +621,6 @@ export function App({ children }: AppProps): JSX.Element {
     };
   }, [searchQuery]);
 
-  // Keep playback progress updated for the bottom Mini Player
   useEffect(() => {
     if (!isPlayingAudio) return;
     const timer = window.setInterval(() => {
@@ -609,9 +630,7 @@ export function App({ children }: AppProps): JSX.Element {
           if (Number.isFinite(cur) && cur >= 0) setPosition(cur);
           const dur = Number(ytAudioPlayerRef.current.getDuration?.() ?? 0);
           if (Number.isFinite(dur) && dur > 0) setDuration(dur);
-        } catch {
-          // Ignore
-        }
+        } catch {}
       } else if (audioPlayerRef.current && !audioPlayerRef.current.paused) {
         const cur = audioPlayerRef.current.currentTime;
         if (Number.isFinite(cur) && cur >= 0) setPosition(cur);
@@ -622,7 +641,6 @@ export function App({ children }: AppProps): JSX.Element {
     return () => window.clearInterval(timer);
   }, [isPlayingAudio]);
 
-  // Sync volume & mute to both <audio> and YT.Player
   useEffect(() => {
     if (audioPlayerRef.current) {
       audioPlayerRef.current.volume = volume;
@@ -633,9 +651,7 @@ export function App({ children }: AppProps): JSX.Element {
         ytAudioPlayerRef.current.setVolume?.(Math.round(volume * 100));
         if (muted) ytAudioPlayerRef.current.mute?.();
         else ytAudioPlayerRef.current.unMute?.();
-      } catch {
-        // Ignore
-      }
+      } catch {}
     }
   }, [volume, muted]);
 
@@ -677,7 +693,6 @@ export function App({ children }: AppProps): JSX.Element {
 
       const audio = audioPlayerRef.current;
 
-      // Toggle current track play/pause immediately
       if (playingId === key) {
         if (ytActiveRef.current && ytAudioPlayerRef.current) {
           try {
@@ -689,9 +704,7 @@ export function App({ children }: AppProps): JSX.Element {
               ytAudioPlayerRef.current.playVideo?.();
               setIsPlayingAudio(true);
             }
-          } catch {
-            // Ignore YT state errors
-          }
+          } catch {}
           return;
         }
         if (!audio.paused) {
@@ -706,18 +719,57 @@ export function App({ children }: AppProps): JSX.Element {
         return;
       }
 
-      // Stop any previous playback before starting the new track
       if (ytActiveRef.current) {
         ytActiveRef.current = false;
         try {
           ytAudioPlayerRef.current?.pauseVideo?.();
-        } catch {
-          // Ignore
-        }
+        } catch {}
       }
       audio.pause();
 
-      // Update UI & Mini Player state at 0ms so response is immediate (same as VOID)
+      const itemCategory = getTrackSearchCategory(item);
+
+      // STRICT OG PLAYBACK PROTECTION:
+      // Validate eligibility again at playback resolution time; fail closed if unverified or lossy.
+      if (itemCategory === 'OG') {
+        if (!isEligibleOgTrack(item)) {
+          setIsPlayingAudio(false);
+          return;
+        }
+        setActiveTrack(item);
+        setPlayingId(key);
+        setPosition(0);
+        setDuration(item.duration > 0 && Number.isFinite(item.duration) ? item.duration : 0);
+        setIsPlayingAudio(true);
+
+        const verification = await verifyOgTrackAtPlaybackTime(item);
+        if (!verification.eligible || !verification.streamUrl) {
+          setIsPlayingAudio(false);
+          return;
+        }
+
+        const ogUrls = [verification.streamUrl, item.downloadUrl].filter(Boolean);
+        let playedOg = false;
+        for (const ogUrl of ogUrls) {
+          try {
+            audio.src = ogUrl;
+            audio.volume = volumeRef.current.volume;
+            audio.muted = volumeRef.current.muted;
+            await audio.play();
+            setIsPlayingAudio(true);
+            playedOg = true;
+            break;
+          } catch (err) {
+            if (err instanceof DOMException && err.name === 'AbortError') return;
+          }
+        }
+        if (!playedOg) {
+          setIsPlayingAudio(false);
+        }
+        return;
+      }
+
+      // Existing playback pipeline for HIGH, VERY HIGH, and LOSSLESS (100% preserved)
       setActiveTrack(item);
       setPlayingId(key);
       setPosition(0);
@@ -731,7 +783,6 @@ export function App({ children }: AppProps): JSX.Element {
         String(item.downloadUrl || '').includes('void-backend') ||
         /^[\w-]{11}$/.test(rawYtCandidateId);
 
-      // Fast path for JioSaavn & Jamendo direct HTTP streams: play immediately without async delay!
       if (!isYouTubeTrack && /^https?:\/\//i.test(item.downloadUrl)) {
         const directCandidates = Array.from(
           new Set(
@@ -766,8 +817,6 @@ export function App({ children }: AppProps): JSX.Element {
         if (playedDirect) return;
       }
 
-      // For YouTube tracks: if YT.Player is already initialized or loads quickly, play immediately via YT.Player
-      // while also checking direct audio candidates if available
       let playedSuccessfully = false;
 
       if (isYouTubeTrack && /^[\w-]{11}$/.test(rawYtCandidateId)) {
@@ -823,9 +872,7 @@ export function App({ children }: AppProps): JSX.Element {
                           ev.target.playVideo?.();
                           setIsPlayingAudio(true);
                         }
-                      } catch {
-                        // Ignore
-                      }
+                      } catch {}
                       finish(true);
                     },
                     onStateChange: (ev: any) => {
@@ -874,9 +921,7 @@ export function App({ children }: AppProps): JSX.Element {
               setIsPlayingAudio(true);
               playedSuccessfully = true;
               break;
-            } catch {
-              // Try next candidate
-            }
+            } catch {}
           }
           if (playedSuccessfully) break;
         }
@@ -891,35 +936,38 @@ export function App({ children }: AppProps): JSX.Element {
 
   const playRelative = useCallback(
     (direction: number) => {
-      if (searchResults.length === 0) {
+      const categoryScopedResults = searchResults.filter(
+        (item) => getTrackSearchCategory(item) === activeCategory,
+      );
+      if (categoryScopedResults.length === 0) {
         if (activeTrack) void handleTogglePlay(activeTrack);
         return;
       }
-      const currentIdx = searchResults.findIndex(
+      const currentIdx = categoryScopedResults.findIndex(
         (item) => `${item.source || 'track'}:${item.id}` === playingId,
       );
       let nextIdx = currentIdx < 0 ? 0 : currentIdx;
-      if (shuffle && direction > 0 && searchResults.length > 1) {
+      if (shuffle && direction > 0 && categoryScopedResults.length > 1) {
         let rand = nextIdx;
         while (rand === nextIdx) {
-          rand = Math.floor(Math.random() * searchResults.length);
+          rand = Math.floor(Math.random() * categoryScopedResults.length);
         }
         nextIdx = rand;
       } else {
         nextIdx += direction;
       }
       if (nextIdx < 0) {
-        nextIdx = repeat === 'all' ? searchResults.length - 1 : 0;
+        nextIdx = repeat === 'all' ? categoryScopedResults.length - 1 : 0;
       }
-      if (nextIdx >= searchResults.length) {
+      if (nextIdx >= categoryScopedResults.length) {
         nextIdx = 0;
       }
-      const target = searchResults[nextIdx];
+      const target = categoryScopedResults[nextIdx];
       if (target) {
         void handleTogglePlay(target);
       }
     },
-    [activeTrack, handleTogglePlay, playingId, repeat, searchResults, shuffle],
+    [activeCategory, activeTrack, handleTogglePlay, playingId, repeat, searchResults, shuffle],
   );
   playRelativeRef.current = playRelative;
 
@@ -927,9 +975,7 @@ export function App({ children }: AppProps): JSX.Element {
     if (ytActiveRef.current && ytAudioPlayerRef.current) {
       try {
         ytAudioPlayerRef.current.seekTo?.(next, true);
-      } catch {
-        // Ignore
-      }
+      } catch {}
     } else if (audioPlayerRef.current) {
       audioPlayerRef.current.currentTime = next;
     }
@@ -942,23 +988,52 @@ export function App({ children }: AppProps): JSX.Element {
         handleSaveHistory(searchQuery);
       }
       const key = `${item.source || 'track'}:${item.id}`;
+      const cat = getTrackSearchCategory(item);
+
+      // STRICT OG DOWNLOAD PROTECTION:
+      // Only allow download if rights explicitly permit download AND binary bytes pass genuine lossless check.
+      // Never convert lossy audio into ALAC/FLAC for OG.
+      if (cat === 'OG') {
+        if (!isEligibleOgTrack(item) || item.ogDownloadAllowed === false) {
+          return;
+        }
+      }
+
       setDownloadingIds((prev) => ({ ...prev, [key]: 'loading' }));
 
       try {
+        const isOgCategory = cat === 'OG';
+        const isLosslessCategory = cat === 'Lossless';
         const ytId = extractYouTubeIdFromTrack(item);
         const isYtTrack =
-          Boolean(ytId) ||
-          formatProviderLabel(item.source, item) === 'YouTube' ||
-          String(item.downloadUrl || '').startsWith('yt-stream://');
+          !isOgCategory &&
+          !isLosslessCategory &&
+          (Boolean(ytId) ||
+            formatProviderLabel(item.source, item) === 'YouTube' ||
+            String(item.downloadUrl || '').startsWith('yt-stream://'));
 
         const candidates = await resolveTrackStreamCandidates(item, true);
         let audioBlob: Blob | null = null;
 
         for (const streamUrl of candidates) {
-          const fetchTargets =
-            /^https?:\/\//i.test(streamUrl) && !streamUrl.includes('saavncdn.com')
-              ? [`/__void_api/proxy-audio?url=${encodeURIComponent(streamUrl)}`, streamUrl]
-              : [streamUrl, `/__void_api/proxy-audio?url=${encodeURIComponent(streamUrl)}`];
+          const fetchTargets = isOgCategory
+            ? [
+                streamUrl.startsWith('/__void_api/')
+                  ? streamUrl
+                  : `/__void_api/og/stream?url=${encodeURIComponent(streamUrl)}`,
+                streamUrl,
+              ]
+            : streamUrl.startsWith('/__void_api/')
+              ? [streamUrl]
+              : isLosslessCategory && /^https?:\/\//i.test(streamUrl)
+                ? [
+                    `/__void_api/proxy-audio?url=${encodeURIComponent(streamUrl)}&codec=alac&ext=.m4a`,
+                    `/__void_api/proxy-audio?url=${encodeURIComponent(streamUrl)}`,
+                    streamUrl,
+                  ]
+                : /^https?:\/\//i.test(streamUrl) && !streamUrl.includes('saavncdn.com')
+                  ? [`/__void_api/proxy-audio?url=${encodeURIComponent(streamUrl)}`, streamUrl]
+                  : [streamUrl, `/__void_api/proxy-audio?url=${encodeURIComponent(streamUrl)}`];
 
           for (const target of fetchTargets) {
             try {
@@ -967,12 +1042,33 @@ export function App({ children }: AppProps): JSX.Element {
               const blob = await response.blob();
               const bType = String(blob.type || '').toLowerCase();
               if (blob.size > 1024 && !bType.includes('html') && !bType.includes('json')) {
+                if (isOgCategory) {
+                  // Strict binary verification for OG downloads — NEVER transcode lossy to ALAC!
+                  const headerBuf = new Uint8Array(await blob.slice(0, 65536).arrayBuffer());
+                  const ogCheck = verifyOgBinaryHeaderBytes(headerBuf);
+                  if (!ogCheck.valid) {
+                    continue;
+                  }
+                  audioBlob = blob;
+                  break;
+                }
+                if (isLosslessCategory) {
+                  const probe = await probeAudioBlob(blob);
+                  if (probe.isLossless) {
+                    audioBlob = blob;
+                    break;
+                  }
+                  const alacBlob = await convertAudioBlobToAlacM4a(blob);
+                  if (alacBlob) {
+                    audioBlob = alacBlob;
+                    break;
+                  }
+                  continue;
+                }
                 audioBlob = blob;
                 break;
               }
-            } catch {
-              // Try next target
-            }
+            } catch {}
           }
           if (audioBlob) break;
         }
@@ -1010,9 +1106,9 @@ export function App({ children }: AppProps): JSX.Element {
           source: formatProviderLabel(item.source, item),
           qualityBadge: item.qualityBadge,
           bitrate: item.bitrate,
-          codec: item.codec,
-          format: item.format,
-          qualityVerified: item.qualityVerified,
+          codec: embeddedAudio.codec !== 'Unknown' ? embeddedAudio.codec : item.codec,
+          format: item.ogSpecBadge || item.format,
+          qualityVerified: embeddedAudio.isLossless || item.qualityVerified,
           exactYtBlob: isYtTrack,
           blob: embeddedAudio.blob,
           downloadedAt: Date.now(),
@@ -1069,6 +1165,10 @@ export function App({ children }: AppProps): JSX.Element {
         ? activeTrack.duration
         : 0;
 
+  const filteredSearchResults = searchResults.filter(
+    (item) => getTrackSearchCategory(item) === activeCategory,
+  );
+
   const uiProps: VoidUIProps = {
     pageRef: page,
     searchSectionRef,
@@ -1078,7 +1178,9 @@ export function App({ children }: AppProps): JSX.Element {
     voiceOrbRef,
     searchQuery,
     setSearchQuery,
-    searchResults,
+    searchResults: filteredSearchResults,
+    activeCategory,
+    setActiveCategory,
     isSearching,
     isSearchPanelOpen,
     setIsSearchPanelOpen,
@@ -1120,7 +1222,6 @@ export function App({ children }: AppProps): JSX.Element {
 
   return (
     <main className="relative h-dvh w-full overflow-hidden bg-black text-white antialiased">
-      {/* Hidden 1x1 YouTube IFrame Player host for exact YouTube track playback (same as VOID) */}
       <div
         aria-hidden="true"
         style={{

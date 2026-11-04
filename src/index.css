@@ -309,7 +309,6 @@
   max-height: min(64dvh, 510px);
 }
 
-/* Keep panel mounted & GPU-warmed; hide smoothly when closed */
 .search-results-panel.is-panel-closed,
 .search-results-panel.star-border.is-panel-closed {
   opacity: 0;
@@ -325,7 +324,6 @@
   animation: none;
 }
 
-/* When Mic / Voice Orb is active, keep the exact full size of the results panel box */
 .search-results-panel.is-voice-orb-open,
 .search-results-panel.star-border.is-voice-orb-open {
   height: min(58dvh, 470px);
@@ -337,7 +335,6 @@
   justify-content: center;
 }
 
-/* Persistent GPU-warmed Voice Orb container so clicking Mic has 0ms shader compile lag */
 .voice-orb-persistent-wrap {
   position: absolute;
   inset: 0;
@@ -365,7 +362,6 @@
   filter: blur(0px);
 }
 
-/* Flowing 3D silver particle-silk veil clipped inside the results panel box (exact from VOID) */
 .palette-silver-dust-layer {
   position: absolute;
   inset: 0;
@@ -408,6 +404,105 @@
   width: 100%;
   height: 100%;
   cursor: pointer;
+}
+
+/* ───────────────────────── Four-Tier Category Header (High / Very High / Lossless / OG) ───────────────────────── */
+.search-category-bar {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  align-items: center;
+  width: 100%;
+  padding: 0.38rem 0.65rem 0.5rem;
+  margin-bottom: 0.22rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.search-category-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.3rem 0.65rem;
+  border: 1px solid transparent;
+  border-radius: 9999px;
+  background: transparent;
+  font-size: 0.78rem;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  line-height: 1.2;
+  color: rgba(255, 255, 255, 0.42);
+  opacity: 0.36;
+  cursor: pointer;
+  transition:
+    color 0.24s var(--ease-out-soft),
+    opacity 0.24s var(--ease-out-soft),
+    text-shadow 0.24s var(--ease-out-soft),
+    background-color 0.24s var(--ease-out-soft),
+    border-color 0.24s var(--ease-out-soft),
+    transform 0.22s var(--ease-out-soft);
+}
+
+.search-category-tab.is-left {
+  justify-self: start;
+}
+
+.search-category-tab.is-center {
+  justify-self: center;
+}
+
+.search-category-tab.is-right {
+  justify-self: end;
+}
+
+.search-category-tab:hover:not(.is-selected) {
+  opacity: 0.66;
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.search-category-tab.is-selected,
+.search-category-tab[data-active='true'] {
+  color: #ffffff;
+  opacity: 1;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.09);
+  border-color: rgba(255, 255, 255, 0.2);
+  text-shadow:
+    0 0 14px rgba(255, 255, 255, 0.65),
+    0 0 4px rgba(255, 255, 255, 0.38);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    0 4px 14px rgba(0, 0, 0, 0.38);
+}
+
+.search-category-tab:active {
+  transform: scale(0.96);
+}
+
+.og-verified-spec-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: rgba(255, 255, 255, 0.92);
+  background: rgba(255, 255, 255, 0.09);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.og-verified-provider-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.7rem;
+  color: rgba(209, 213, 219, 0.75);
+  flex-shrink: 0;
 }
 
 .search-results-list {
@@ -510,7 +605,6 @@
   flex: none;
 }
 
-/* Borderless Play/Pause Button & VOID Download Emblem + Animation */
 .row-play-icon-button {
   display: inline-grid;
   place-items: center;

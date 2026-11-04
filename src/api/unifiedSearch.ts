@@ -1,11 +1,11 @@
 /**
  * Unified Multi-Provider Music Search Orchestrator for VOID Downloader.
  *
- * Strictly enforces provider priority order:
- * 1. JioSaavn (`searchJioSaavn`) — Always #1 at the very top of search results
- * 2. Jamendo (`searchJamendo`) — #2 below JioSaavn
- * 3. YouTube (`searchYouTube`) — #3 below Jamendo
- * 4. Remaining fallback APIs (`searchThirdPartyLossless`, `searchInternetArchive`, `searchRadioBrowser`)
+ * Strictly enforces provider priority order & 4-section category routing:
+ * - "High": JioSaavn (#1 priority), Jamendo (#2), YouTube (#3), and remaining open APIs (#4)
+ * - "Very High": Spotify (`searchSpotifyTracks`)
+ * - "Lossless": Apple Music (`searchAppleMusicTracks`)
+ * - "OG": Independent 4-Stage Verified Genuine Lossless (`searchOgSection`)
  */
 
 import { searchJioSaavn } from "./musicApi";
@@ -14,6 +14,8 @@ import { searchJamendo } from "./jamendoApi";
 import { searchRadioBrowser } from "./radioBrowserApi";
 import { searchThirdPartyLossless } from "./losslessGatewayApi";
 import { searchYouTube } from "./youtubeApi";
+import { searchAppleMusicTracks, searchSpotifyTracks } from "./spotifyAndAppleApi";
+import { searchOgSection } from "./ogApi";
 import {
   type SearchResult,
   deduplicateAndSortSearchResults,
@@ -28,10 +30,6 @@ export interface ProviderSearchOutcome {
 
 export interface UnifiedSearchOptions {
   signal?: AbortSignal;
-  /**
-   * Optional callback invoked as providers resolve so JioSaavn renders at the top immediately
-   * while secondary providers append below it.
-   */
   onPartialResults?: (mergedSoFar: SearchResult[]) => void;
 }
 
@@ -44,15 +42,14 @@ export const PROVIDERS: readonly ProviderDescriptor[] = [
   { name: "JioSaavn", run: searchJioSaavn },
   { name: "Jamendo", run: searchJamendo },
   { name: "YouTube", run: searchYouTube },
+  { name: "Spotify", run: searchSpotifyTracks },
+  { name: "Apple Music", run: searchAppleMusicTracks },
+  { name: "OG Verified Lossless", run: searchOgSection },
   { name: "Third-Party Lossless Gateway", run: searchThirdPartyLossless },
   { name: "Internet Archive", run: searchInternetArchive },
   { name: "Radio Browser", run: searchRadioBrowser },
 ];
 
-/**
- * Executes concurrent searches across configured providers, ensuring JioSaavn (#1 priority)
- * always appears at the top of the list, followed by Jamendo (#2), YouTube (#3), and other APIs (#4).
- */
 export async function searchAllProviders(
   query: string,
   options?: UnifiedSearchOptions
@@ -84,9 +81,15 @@ export async function searchAllProviders(
         if (providerIdx === 0) {
           jioSaavnSettled = true;
         }
-        // Only emit partial results once JioSaavn (#1 priority) has settled,
-        // so non-JioSaavn songs never flash at the top before JioSaavn arrives.
-        if (options?.onPartialResults && jioSaavnSettled) {
+        if (
+          options?.onPartialResults &&
+          (jioSaavnSettled ||
+            providerIdx === 3 ||
+            providerIdx === 4 ||
+            providerIdx === 5 ||
+            providerIdx === 6 ||
+            providerIdx === 7)
+        ) {
           options.onPartialResults(getOrderedAccumulated());
         }
       } else if (providerIdx === 0) {
