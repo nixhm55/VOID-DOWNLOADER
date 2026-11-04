@@ -678,7 +678,12 @@ const SwarmCursor = ({
       if (!element || !container.contains(element)) return null;
       let match: Element | null = null;
       try {
-        match = element.closest(s.targets);
+        if (s.targets.includes('[data-swarm-target]')) {
+          match = element.closest('[data-swarm-target]');
+        }
+        if (!match) {
+          match = element.closest(s.targets);
+        }
       } catch {
         match = null;
       }

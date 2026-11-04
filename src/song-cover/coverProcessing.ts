@@ -1,10 +1,12 @@
-/**
- * Song-cover selection, persistence, YouTube thumbnail detection and scaling copied from
- * src/api/arabicTrendingCatalog.ts. Arabic/trending catalog logic is intentionally omitted.
- */
-import { cleanCanonicalTrackTitle } from '../api/quality';
+import {
+  areArtistsCompatibleForDedup,
+  cleanCanonicalTrackTitle,
+  extractBaseSongHeadline,
+  isCompilationOrMismatchedAlbum,
+  scoreCoverAuthenticity,
+} from '../api/quality';
 
-const STICKY_COVER_STORAGE_KEY = "void-sticky-covers-v9";
+const STICKY_COVER_STORAGE_KEY = "void-sticky-covers-v10";
 
 function loadJsonMap(key: string): Record<string, string> {
   try {
@@ -36,6 +38,14 @@ export function isValidCoverUrl(url: unknown): url is string {
   return /^https?:\/\//i.test(clean) || clean.startsWith("data:image/");
 }
 
+export function isCompilationOrSuspectCover(track: any): boolean {
+  if (!track) return false;
+  const title = String(track.title || track.name || "").trim();
+  const album = String(track.album || "").trim();
+  const artist = String(track.artist || "").trim();
+  return isCompilationOrMismatchedAlbum(album, title, artist);
+}
+
 const stickyCoverMemoryMap = new Map<string, string>();
 
 export const stickyCoverListeners = new Set<() => void>();
@@ -51,6 +61,11 @@ let stickyCoversHydrated = false;
 function hydrateStickyCovers(): void {
   if (stickyCoversHydrated || typeof localStorage === "undefined") return;
   stickyCoversHydrated = true;
+  try {
+    localStorage.removeItem("void-sticky-covers-v9");
+  } catch {
+    /* ignore */
+  }
   const saved = loadJsonMap(STICKY_COVER_STORAGE_KEY);
   let dirty = false;
   for (const [k, v] of Object.entries(saved)) {
@@ -60,14 +75,26 @@ function hydrateStickyCovers(): void {
       dirty = true;
     }
   }
-  
-  
   if (dirty) {
     persistStickyCoversDeferred();
   }
 }
 
-function normalizeTrackKey(track: any): string[] {
+function extractTrackPartGroup(rawTitle: string): number {
+  const m = String(rawTitle || "").match(/\b(?:part|pt\.?)\s*(?:([0-9]+)|(iv|iii|ii|i))\b/i);
+  if (!m) return 1;
+  if (m[1]) {
+    const n = Number.parseInt(m[1], 10);
+    return n >= 2 ? n : 1;
+  }
+  const roman = (m[2] || "").toLowerCase();
+  if (roman === "ii") return 2;
+  if (roman === "iii") return 3;
+  if (roman === "iv") return 4;
+  return 1;
+}
+
+function normalizeTrackKey(track: any, includeBaseGroup = true): string[] {
   if (!track) return [];
   const keys = new Set<string>();
   const rawId = String(track.id ?? "").trim();
@@ -102,6 +129,13 @@ function normalizeTrackKey(track: any): string[] {
     lowerArtist;
   if (cleanTitle && latinArtist) {
     keys.add(`meta:${cleanTitle}|${latinArtist}`);
+  }
+  if (includeBaseGroup) {
+    const baseHeadline = extractBaseSongHeadline(rawTitle);
+    const partGroup = extractTrackPartGroup(rawTitle);
+    if (baseHeadline && latinArtist) {
+      keys.add(`base:${baseHeadline}|${latinArtist}|part:${partGroup}`);
+    }
   }
   if (cleanTitle) {
     keys.add(`title:${cleanTitle}`);
@@ -477,13 +511,16 @@ export function rememberStickyCover(
   track: any,
   explicitUrl?: string,
   preload = shouldPreloadCoverImages(),
-  notifyListeners = true
+  notifyListeners = true,
+  verified = false
 ): void {
   hydrateStickyCovers();
   const url = explicitUrl || track?.remoteImage || track?.image;
   if (!isValidCoverUrl(url)) return;
+  if (!verified && isCompilationOrSuspectCover(track)) return;
   const cleanUrl = url.trim();
-  const keys = normalizeTrackKey(track);
+  const isOfficialSingleOrStudio = scoreCoverAuthenticity({ ...track, image: cleanUrl }) >= 60 || verified;
+  const keys = normalizeTrackKey(track, isOfficialSingleOrStudio);
   let changed = false;
   for (const key of keys) {
     if (stickyCoverMemoryMap.get(key) !== cleanUrl) {
@@ -501,30 +538,37 @@ export function rememberStickyCover(
 export function getStickyCoverUrl(track: any): string {
   if (!track) return "";
   hydrateStickyCovers();
-  const directCandidate = track.remoteImage || track.image;
-  if (isValidCoverUrl(directCandidate)) {
-    rememberStickyCover(track, directCandidate, false, false);
-    return directCandidate.trim();
-  }
-  const keys = normalizeTrackKey(track);
+  const keys = normalizeTrackKey(track, true);
   for (const key of keys) {
     const found = stickyCoverMemoryMap.get(key);
     if (found && isValidCoverUrl(found)) {
       return found;
     }
   }
+  const directCandidate = track.remoteImage || track.image;
+  if (isValidCoverUrl(directCandidate) && !isCompilationOrSuspectCover(track)) {
+    rememberStickyCover(track, directCandidate, false, false);
+    return directCandidate.trim();
+  }
   return "";
 }
 
-export async function resolveAndLockTrackCover(track: any): Promise<string> {
+export async function resolveAndLockTrackCover(
+  track: any,
+  forceVerify = false
+): Promise<string> {
   if (!track) return "";
-  const existing = getStickyCoverUrl(track);
-  if (existing) return existing;
+  if (!forceVerify) {
+    const existing = getStickyCoverUrl(track);
+    if (existing) return existing;
+  }
 
   const rawTitle = String(track.title || track.name || "").trim();
   const rawArtist = String(track.artist || "").trim();
   const rawAlbum = String(track.album || "").trim();
   const cleanTitle = cleanCanonicalTrackTitle(rawTitle);
+  const baseHeadline = extractBaseSongHeadline(rawTitle) || cleanTitle;
+  const partGroup = extractTrackPartGroup(rawTitle);
   const artistParts = rawArtist
     .split(/\s*[·|,;&/]\s*/)
     .map((p) => p.trim())
@@ -534,29 +578,105 @@ export async function resolveAndLockTrackCover(track: any): Promise<string> {
     artistParts[0] ||
     rawArtist;
 
-  const probeKey = `${cleanTitle.toLowerCase()}|${primaryArtist.toLowerCase()}`;
-  if (!cleanTitle) return "";
+  const probeKey = `${baseHeadline.toLowerCase()}|${primaryArtist.toLowerCase()}|part:${partGroup}`;
+  if (!baseHeadline) return "";
 
   const inflight = pendingCoverResolutions.get(probeKey);
   if (inflight) return inflight;
 
   const promise = (async (): Promise<string> => {
     try {
+      const searchTitle =
+        partGroup >= 2 ? `${baseHeadline} Part ${partGroup}` : baseHeadline;
       const queries = Array.from(
         new Set(
           [
-            primaryArtist ? `${cleanTitle} ${primaryArtist}`.trim() : "",
-            rawAlbum && !/unknown/i.test(rawAlbum) ? `${cleanTitle} ${rawAlbum}`.trim() : "",
-            cleanTitle,
+            primaryArtist ? `${searchTitle} ${primaryArtist}`.trim() : "",
+            primaryArtist && cleanTitle !== searchTitle
+              ? `${cleanTitle} ${primaryArtist}`.trim()
+              : "",
+            rawAlbum &&
+            !/unknown/i.test(rawAlbum) &&
+            !isCompilationOrMismatchedAlbum(rawAlbum, rawTitle, rawArtist)
+              ? `${searchTitle} ${rawAlbum}`.trim()
+              : "",
+            searchTitle,
           ].filter((q) => q.length >= 2)
         )
       );
 
-      // 1. Query JioSaavn 500x500 official album art
+      let bestCandidateUrl = "";
+      let bestCandidateScore = -999;
+
+      const considerCandidate = (
+        imgUrl: string,
+        candTitle: string,
+        candAlbum: string,
+        candArtist: string,
+        sourceBonus = 0
+      ) => {
+        if (!isValidCoverUrl(imgUrl)) return;
+        if (primaryArtist && candArtist && !areArtistsCompatibleForDedup(primaryArtist, candArtist)) {
+          return;
+        }
+        const candBase = extractBaseSongHeadline(candTitle);
+        if (candBase && baseHeadline && candBase !== baseHeadline && !candBase.includes(baseHeadline) && !baseHeadline.includes(candBase)) {
+          return;
+        }
+        const candPart = extractTrackPartGroup(candTitle);
+        if (partGroup !== candPart) return;
+        if (isCompilationOrMismatchedAlbum(candAlbum, candTitle, candArtist)) return;
+
+        const score =
+          scoreCoverAuthenticity({
+            name: candTitle,
+            album: candAlbum,
+            artist: candArtist,
+            image: imgUrl,
+          }) + sourceBonus;
+
+        if (score > bestCandidateScore) {
+          bestCandidateScore = score;
+          bestCandidateUrl = imgUrl;
+        }
+      };
+
+      // 1. Query iTunes 600x600 official studio/single art via local proxy
       for (const q of queries) {
         try {
           const res = await fetch(
-            `https://elitejiosaavn-api.vercel.app/api/search/songs?query=${encodeURIComponent(q)}&page=1&limit=6`
+            `/__void_api/itunes-search?term=${encodeURIComponent(q)}&country=us&entity=song&limit=8`
+          );
+          if (res.ok) {
+            const json: any = await res.json();
+            const results: any[] = Array.isArray(json?.results) ? json.results : [];
+            for (const item of results) {
+              if (/compilation/i.test(String(item?.collectionType || ""))) continue;
+              if (/various\s*artists/i.test(String(item?.collectionArtistName || ""))) continue;
+              const rawArt = String(item?.artworkUrl100 || "").trim();
+              if (!rawArt) continue;
+              const hiRes = rawArt.replace("100x100bb", "600x600bb");
+              considerCandidate(
+                hiRes,
+                String(item?.trackName || ""),
+                String(item?.collectionName || ""),
+                String(item?.artistName || ""),
+                15
+              );
+            }
+          }
+          if (bestCandidateScore >= 95 && bestCandidateUrl) {
+            rememberStickyCover(track, bestCandidateUrl, true, true, true);
+            return bestCandidateUrl;
+          }
+        } catch {}
+      }
+
+      // 2. Query JioSaavn 500x500 official non-compilation album/single art
+      for (const q of queries) {
+        try {
+          const res = await fetch(
+            `https://elitejiosaavn-api.vercel.app/api/search/songs?query=${encodeURIComponent(q)}&page=1&limit=10`
           );
           if (res.ok) {
             const json: any = await res.json();
@@ -570,36 +690,51 @@ export async function resolveAndLockTrackCover(track: any): Promise<string> {
               const hiRes =
                 images.find((img: any) => img?.quality === "500x500") || images[images.length - 1];
               const imgUrl = String(hiRes?.url || hiRes?.link || song?.image || "").trim();
-              if (isValidCoverUrl(imgUrl)) {
-                rememberStickyCover(track, imgUrl);
-                return imgUrl;
-              }
+              const songTitle = String(song?.name || song?.title || "");
+              const songAlbum = String(song?.album?.name || "");
+              const songArtist =
+                typeof song?.primaryArtists === "string" && song.primaryArtists
+                  ? song.primaryArtists
+                  : Array.isArray(song?.artists?.primary)
+                    ? song.artists.primary.map((a: any) => a?.name || "").join(", ")
+                    : "";
+              considerCandidate(imgUrl, songTitle, songAlbum, songArtist, 10);
+            }
+          }
+          if (bestCandidateScore >= 90 && bestCandidateUrl) {
+            rememberStickyCover(track, bestCandidateUrl, true, true, true);
+            return bestCandidateUrl;
+          }
+        } catch {}
+      }
+
+      // 3. Query Deezer official studio/single cover via local proxy
+      for (const q of queries.slice(0, 2)) {
+        try {
+          const deezerUrl = `https://api.deezer.com/search?q=${encodeURIComponent(q)}&limit=8`;
+          const res = await fetch(`/__void_api/proxy?url=${encodeURIComponent(deezerUrl)}`);
+          if (res.ok) {
+            const json: any = await res.json();
+            const items: any[] = Array.isArray(json?.data) ? json.data : [];
+            for (const item of items) {
+              const imgUrl = String(
+                item?.album?.cover_xl || item?.album?.cover_big || item?.album?.cover_medium || ""
+              ).trim();
+              considerCandidate(
+                imgUrl,
+                String(item?.title || ""),
+                String(item?.album?.title || ""),
+                String(item?.artist?.name || ""),
+                12
+              );
             }
           }
         } catch {}
       }
 
-      // 2. Query iTunes 600x600 official album art via local proxy
-      for (const q of queries) {
-        try {
-          const res = await fetch(
-            `/__void_api/itunes-search?term=${encodeURIComponent(q)}&country=us&entity=song&limit=5`
-          );
-          if (res.ok) {
-            const json: any = await res.json();
-            const results: any[] = Array.isArray(json?.results) ? json.results : [];
-            for (const item of results) {
-              const rawArt = String(item?.artworkUrl100 || "").trim();
-              if (rawArt) {
-                const hiRes = rawArt.replace("100x100bb", "600x600bb");
-                if (isValidCoverUrl(hiRes)) {
-                  rememberStickyCover(track, hiRes);
-                  return hiRes;
-                }
-              }
-            }
-          }
-        } catch {}
+      if (bestCandidateUrl && bestCandidateScore >= 25) {
+        rememberStickyCover(track, bestCandidateUrl, true, true, true);
+        return bestCandidateUrl;
       }
     } finally {
       pendingCoverResolutions.delete(probeKey);

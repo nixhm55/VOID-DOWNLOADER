@@ -4,6 +4,7 @@ import {
   computeAutoFitCoverScale,
   getCachedCoverScale,
   getStickyCoverUrl,
+  isCompilationOrSuspectCover,
   isCoverUrlLoaded,
   isValidCoverUrl,
   markCoverUrlLoaded,
@@ -37,11 +38,12 @@ export const Cover = memo(
     const [resolvedRemoteUrl, setResolvedRemoteUrl] = useState<string>('');
     const [blobSrc, setBlobSrc] = useState<string | null>(null);
     const [failedUrls, setFailedUrls] = useState<string[]>([]);
+    const suspectCompilation = Boolean(track && isCompilationOrSuspectCover(track));
 
     useEffect(() => {
       setFailedUrls([]);
       setResolvedRemoteUrl('');
-    }, [track?.id, track?.title, track?.artist]);
+    }, [track?.id, track?.title, track?.name, track?.artist]);
 
     useEffect(() => {
       if (!track) {
@@ -70,7 +72,11 @@ export const Cover = memo(
     }, [track, track?.artwork, track?.coverBlob, track?.id]);
 
     const directValidImg = track && isValidCoverUrl(track.image) ? String(track.image).trim() : '';
-    const candidates = [stickyRemoteUrl, directValidImg, resolvedRemoteUrl, blobSrc].filter(
+    const candidates = (
+      suspectCompilation
+        ? [resolvedRemoteUrl, stickyRemoteUrl, directValidImg, blobSrc]
+        : [stickyRemoteUrl, resolvedRemoteUrl, directValidImg, blobSrc]
+    ).filter(
       (u): u is string => typeof u === 'string' && u.length > 0 && !failedUrls.includes(u)
     );
     const finalSrc = candidates[0] || null;
@@ -82,13 +88,13 @@ export const Cover = memo(
 
     useEffect(() => {
       if (!track) return;
-      if (stickyRemoteUrl && !failedUrls.includes(stickyRemoteUrl)) {
+      if (!suspectCompilation && stickyRemoteUrl && !failedUrls.includes(stickyRemoteUrl)) {
         rememberStickyCover(track, stickyRemoteUrl);
         return;
       }
-      if (finalSrc) return;
+      if (!suspectCompilation && finalSrc) return;
       let active = true;
-      void resolveAndLockTrackCover(track).then(url => {
+      void resolveAndLockTrackCover(track, suspectCompilation).then(url => {
         if (active && url) {
           setResolvedRemoteUrl(url);
         }
@@ -96,7 +102,7 @@ export const Cover = memo(
       return () => {
         active = false;
       };
-    }, [track, stickyRemoteUrl, finalSrc, failedUrls]);
+    }, [track, stickyRemoteUrl, finalSrc, failedUrls, suspectCompilation]);
 
     const Glyph = kind === 'list' ? ListMusic : Disc3;
 
@@ -113,7 +119,7 @@ export const Cover = memo(
             style={{ opacity: 1, transform: fitScale > 1.005 ? `scale(${fitScale})` : undefined }}
             decoding="async"
             onLoad={e => {
-              if (isValidCoverUrl(finalSrc)) {
+              if (isValidCoverUrl(finalSrc) && !suspectCompilation) {
                 rememberStickyCover(track, finalSrc);
               }
               markCoverUrlLoaded(finalSrc);
@@ -131,7 +137,7 @@ export const Cover = memo(
             onError={() => {
               setFailedUrls(prev => (prev.includes(finalSrc) ? prev : [...prev, finalSrc]));
               if (track) {
-                void resolveAndLockTrackCover(track).then(url => {
+                void resolveAndLockTrackCover(track, true).then(url => {
                   if (url && url !== finalSrc) {
                     setResolvedRemoteUrl(url);
                   }

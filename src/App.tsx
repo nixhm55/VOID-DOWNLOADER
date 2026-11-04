@@ -3,26 +3,10 @@ import {
   useEffect,
   useRef,
   useState,
-  type CSSProperties,
   type JSX,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from 'react';
-import {
-  ChevronDown,
-  Clock3,
-  Pause,
-  Play,
-  Repeat,
-  Repeat1,
-  Shuffle,
-  SkipBack,
-  SkipForward,
-  Volume1,
-  Volume2,
-  VolumeX,
-  X,
-} from 'lucide-react';
 import {
   formatProviderLabel,
   type SearchResult,
@@ -33,164 +17,19 @@ import {
   resolveYouTubeDownloadCandidates,
   resolveYouTubePlayableStream,
 } from '@/api/youtubeApi';
-import { Cover } from '@/components/cover-renderers/AppCover';
-import { LightRays } from '@/components/effects';
 import {
-  LiquidGlassOrb,
   type LiquidGlassOrbHandle,
   type LiquidGlassOrbState,
 } from '@/components/liquid-glass-orb';
-import { SilverDustBackdrop } from '@/components/SilverDustBackdrop';
-import StarBorder from '@/components/StarBorder';
-import {
-  SoapBubbleMaterial,
-  SoapBubbleSearch,
-  SoapBubbleSlider,
-} from '@/components/soap-bubble';
-import { DgReveal } from '@/motion';
+import { DesktopUI } from '@/desktop';
+import { MobileUI } from '@/mobile';
 import { prepareDownloadArtwork } from '@/song-cover/downloadCoverArtwork';
 import { embedMetadataAndCoverIntoAudio } from '@/song-cover/embedAudioMetadata';
 import { putVoidDownload } from '@/song-cover/downloadsDb';
+import type { VoidUIProps } from '@/types/voidUI';
 
 export interface AppProps {
   readonly children?: ReactNode;
-}
-
-const SLIDER_BUBBLE_MATERIAL_PROPS = {
-  iridescence: 0.5,
-  oilCoverage: 0.73,
-  oilEdgeFade: 2.33,
-  clearCenter: 0.57,
-  windowLength: 1.3,
-  windowMargin: 0.85,
-  windowBend: 0.75,
-  windowSize: 0.75,
-  windowWidth: 0.8,
-  windowGradient: 0.96,
-  windowHead: 0.7,
-  windowTail: 0.6,
-  glintSize: 1.65,
-  glintIntensity: 0,
-  glintDistance: -0.45,
-  glintHeight: 0.65,
-  windowIntensity: 0.85,
-  windowTwin: false,
-  bottomShadeColor: '#ffffff',
-} as const;
-
-function VoidGlyph({ playing }: { playing: boolean }): JSX.Element {
-  return (
-    <svg className="void-glyph" viewBox="0 0 24 24" aria-hidden="true" data-playing={playing}>
-      <circle className="g-ring" cx="12" cy="12" r="10" transform="rotate(-19 12 12)" />
-      <path className="g-play" d="M10 8.4 L16.4 12 L10 15.6 Z" />
-      <g className="g-pause">
-        <rect x="9" y="8.6" width="2.1" height="6.8" rx=".8" />
-        <rect x="12.9" y="8.6" width="2.1" height="6.8" rx=".8" />
-      </g>
-    </svg>
-  );
-}
-
-function VolumeControl({
-  volume,
-  muted,
-  accentColor = 'rgb(232, 228, 220)',
-  onVolume,
-  onToggleMute,
-}: {
-  volume: number;
-  muted: boolean;
-  accentColor?: string;
-  onVolume: (value: number) => void;
-  onToggleMute: () => void;
-}): JSX.Element {
-  const [open, setOpen] = useState(false);
-  const root = useRef<HTMLDivElement>(null);
-  const timer = useRef<number | undefined>(undefined);
-  const dragging = useRef(false);
-  const silent = muted || volume <= 0;
-  const Icon = silent ? VolumeX : volume < 0.4 ? Volume1 : Volume2;
-
-  const clearTimer = () => window.clearTimeout(timer.current);
-  const armClose = () => {
-    clearTimer();
-    timer.current = window.setTimeout(() => {
-      if (!dragging.current) setOpen(false);
-    }, 1800);
-  };
-
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (event: PointerEvent) => {
-      if (!root.current?.contains(event.target as Node)) setOpen(false);
-    };
-    document.addEventListener('pointerdown', onDown);
-    return () => document.removeEventListener('pointerdown', onDown);
-  }, [open]);
-
-  useEffect(() => () => window.clearTimeout(timer.current), []);
-
-  const label = open ? (silent ? 'Unmute' : 'Mute') : 'Volume';
-  return (
-    <div
-      ref={root}
-      className="vol"
-      data-open={open ? '' : undefined}
-      data-silent={silent ? '' : undefined}
-      onPointerEnter={clearTimer}
-      onPointerLeave={() => {
-        if (open) armClose();
-      }}
-      onKeyDown={(event) => {
-        if (open && event.key === 'Escape') {
-          event.stopPropagation();
-          setOpen(false);
-        }
-      }}
-      onBlur={(event) => {
-        if (open && !event.currentTarget.contains(event.relatedTarget as Node | null)) {
-          armClose();
-        }
-      }}
-    >
-      <div className="vol-pop">
-        <SoapBubbleMaterial {...SLIDER_BUBBLE_MATERIAL_PROPS}>
-          <SoapBubbleSlider
-            className="vol-slider"
-            scale={0.62}
-            sliderHeight={18}
-            trackHeight={3.5}
-            hoverOnlyBubble
-            from={accentColor}
-            min={0}
-            max={1}
-            step={0.01}
-            value={silent ? 0 : volume}
-            label="Volume"
-            inputTabIndex={open ? 0 : -1}
-            onValueChange={(val) => onVolume(val)}
-            onDragStateChange={(isDragging) => {
-              dragging.current = isDragging;
-              if (isDragging) clearTimer();
-            }}
-          />
-        </SoapBubbleMaterial>
-      </div>
-      <button
-        type="button"
-        className="icon-button vol-button"
-        aria-label={label}
-        aria-expanded={open}
-        title={label}
-        onClick={() => {
-          if (open) onToggleMute();
-          else setOpen(true);
-        }}
-      >
-        <Icon key={silent ? 'silent' : 'sound'} />
-      </button>
-    </div>
-  );
 }
 
 // Loads YouTube's Official IFrame Player API script once and resolves with global YT object (same as VOID)
@@ -236,34 +75,6 @@ function createYtContainerBlob(): Blob {
   writeAscii(36, 'data');
   view.setUint32(40, 44, true);
   return new Blob([buffer], { type: 'audio/wav' });
-}
-
-function formatDuration(seconds?: number): string {
-  if (!seconds || !Number.isFinite(seconds) || seconds <= 0) return '';
-  const total = Math.round(seconds);
-  const mins = Math.floor(total / 60);
-  const secs = total % 60;
-  return `${mins}:${secs.toString().padStart(2, '0')}`;
-}
-
-function formatTime(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds <= 0) return '—:—';
-  return `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
-}
-
-function formatElapsed(seconds: number): string {
-  return !Number.isFinite(seconds) || seconds <= 0 ? '0:00' : formatTime(seconds);
-}
-
-function formatMinimalArtist(rawArtist?: string): string {
-  const raw = String(rawArtist || '').trim();
-  if (!raw) return 'Unknown Artist';
-  const parts = raw
-    .split(/(?:,|;|&|·|\||\/)/)
-    .map((p) => p.replace(/[^\p{L}\p{N}\s'-]+/gu, ' ').replace(/\s+/g, ' ').trim())
-    .filter(Boolean);
-  const primary = parts[0] || raw.replace(/[,.;|•]+/g, ' ').replace(/\s+/g, ' ').trim();
-  return primary.length > 26 ? `${primary.slice(0, 26).trim()}…` : primary;
 }
 
 async function resolveTrackStreamCandidates(
@@ -1233,6 +1044,20 @@ export function App({ children }: AppProps): JSX.Element {
     [handleSaveHistory, searchQuery],
   );
 
+  const [isMobileViewport, setIsMobileViewport] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.matchMedia('(max-width: 768px)').matches;
+  });
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return;
+    const mq = window.matchMedia('(max-width: 768px)');
+    const onChange = (e: MediaQueryListEvent) => setIsMobileViewport(e.matches);
+    setIsMobileViewport(mq.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+
   const activeTrackKey = activeTrack
     ? `${activeTrack.source || 'track'}:${activeTrack.id}`
     : '';
@@ -1243,6 +1068,55 @@ export function App({ children }: AppProps): JSX.Element {
       : activeTrack?.duration && Number.isFinite(activeTrack.duration)
         ? activeTrack.duration
         : 0;
+
+  const uiProps: VoidUIProps = {
+    pageRef: page,
+    searchSectionRef,
+    searchOccluderRef,
+    searchInputRef,
+    resultsListRef,
+    voiceOrbRef,
+    searchQuery,
+    setSearchQuery,
+    searchResults,
+    isSearching,
+    isSearchPanelOpen,
+    setIsSearchPanelOpen,
+    searchHistory,
+    historyExpanded,
+    setHistoryExpanded,
+    handleSaveHistory,
+    handleRemoveHistory,
+    voiceOrbOpen,
+    voiceOrbState,
+    toggleVoiceSearch,
+    stopVoiceSearch,
+    triggerVoiceSearchCompletion,
+    getLiveVoiceAudioLevel,
+    getLiveVoiceSignal,
+    hasQuery,
+    showResultsPanel,
+    activeTrack,
+    playingId,
+    isPlayingAudio,
+    position,
+    effectiveDuration,
+    volume,
+    setVolume,
+    muted,
+    setMuted,
+    shuffle,
+    setShuffle,
+    repeat,
+    setRepeat,
+    downloadingIds,
+    activeTrackDlState,
+    handleTogglePlay,
+    handleDownloadTrack,
+    playRelative,
+    seekTo,
+    children,
+  };
 
   return (
     <main className="relative h-dvh w-full overflow-hidden bg-black text-white antialiased">
@@ -1263,545 +1137,7 @@ export function App({ children }: AppProps): JSX.Element {
         <div ref={ytAudioHostRef} />
       </div>
 
-      <div
-        ref={page}
-        className="relative h-full w-full overflow-hidden"
-        data-theme="dark"
-        style={{
-          background: '#000000',
-          color: '#e5e7eb',
-          padding: 'clamp(1.5rem, 6vw, 4rem)',
-        }}
-      >
-        <div className="pointer-events-none absolute inset-0 z-0 h-full w-full">
-          <LightRays
-            raysOrigin="top-center"
-            raysColor="#ffffff"
-            raysSpeed={1}
-            lightSpread={0.5}
-            rayLength={3}
-            glow={0.6}
-            haze={0.25}
-            followMouse
-            mouseInfluence={0.1}
-            occluderRef={searchOccluderRef}
-          />
-        </div>
-
-        <section
-          ref={searchSectionRef}
-          className="relative z-10 mx-auto w-full"
-          style={{
-            maxWidth: '42rem',
-            marginTop: 'clamp(5.5rem, 15vh, 8.5rem)',
-            fontSize: 20,
-          }}
-        >
-          <SoapBubbleMaterial
-            glass={0.9}
-            iridescence={0}
-            oilOpacity={0}
-            oilCoverage={0}
-            dispersion={0}
-            reflectivity={0.14}
-            mirage={0.08}
-            refraction={0.04}
-            bevel={8}
-            tint="#050507"
-            opacity={0.94}
-            soapHighlightColor="#ffffff1a"
-            soapShadeColor="#000000"
-            keyLight={false}
-            windowLight={false}
-            windowIntensity={0}
-            glintIntensity={0}
-            windowTwin={false}
-            floorLight={0.06}
-            bottomShade
-            bottomShadeColor="#000000cc"
-          >
-            <div ref={searchOccluderRef} className="search-occluder-wrap">
-              <SoapBubbleSearch
-                ref={searchInputRef}
-                placeholder={voiceOrbOpen ? 'Listening…' : 'Search'}
-                value={searchQuery}
-                onFocus={() => setIsSearchPanelOpen(true)}
-                onClick={() => setIsSearchPanelOpen(true)}
-                onChange={(event) => {
-                  setSearchQuery(event.target.value);
-                  setIsSearchPanelOpen(true);
-                  if (voiceOrbOpen) {
-                    stopVoiceSearch();
-                  }
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
-                    event.preventDefault();
-                    if (searchQuery.trim()) {
-                      handleSaveHistory(searchQuery);
-                    }
-                    if (voiceOrbOpen) {
-                      if (searchQuery.trim()) {
-                        triggerVoiceSearchCompletion();
-                      } else {
-                        stopVoiceSearch();
-                      }
-                    }
-                  }
-                }}
-                micActive={voiceOrbOpen}
-                onMicClick={toggleVoiceSearch}
-              />
-            </div>
-          </SoapBubbleMaterial>
-
-          {showResultsPanel && (
-            <StarBorder
-              as="div"
-              className={`search-results-panel${voiceOrbOpen ? ' is-voice-orb-open' : ''}`}
-              role="region"
-              aria-label={voiceOrbOpen ? 'Voice search' : 'Search results'}
-              color="#94a3b8"
-              trailColor="#94a3b8"
-              duration={9.5}
-              direction="clockwise"
-              stars={1}
-              trailLength={0.4}
-              thickness={2}
-              radius={22}
-              glow={0.75}
-              active={
-                voiceOrbOpen ||
-                !hasQuery ||
-                (isSearching && searchResults.length === 0)
-              }
-              hover="none"
-              sparkle={false}
-              clickPulse={false}
-              theme="dark"
-            >
-              {voiceOrbOpen ? (
-                <div className="voice-orb-persistent-wrap is-active">
-                  <SilverDustBackdrop
-                    active={true}
-                    getVoiceSignal={getLiveVoiceSignal}
-                  />
-                  <div
-                    className="palette-voice-orb-stage"
-                    onClick={() => {
-                      if (searchQuery.trim() && voiceOrbState === 'listening') {
-                        handleSaveHistory(searchQuery);
-                        triggerVoiceSearchCompletion();
-                      } else {
-                        stopVoiceSearch();
-                      }
-                    }}
-                  >
-                    <LiquidGlassOrb
-                      ref={voiceOrbRef}
-                      baseColor="#ffffff"
-                      colorA="#000000"
-                      colorB="#4d4d4d"
-                      colorC="#a9a9a9"
-                      seed={145}
-                      startTime={18}
-                      speed={1.5}
-                      distortion={0.8}
-                      clusterCount={7.2}
-                      clusterIntensity={3}
-                      clusterSize={22.5}
-                      scale={0.23}
-                      spotSize={1.15}
-                      rotation={0}
-                      softness={0.31}
-                      relief={2.94}
-                      refraction={0.65}
-                      roughness={0}
-                      reflection={1.3}
-                      caustics={0}
-                      dispersion={1}
-                      colorDistribution={0}
-                      grain={0}
-                      grainSize={1}
-                      paused={false}
-                      animateDistortion={true}
-                      grainMode="fine"
-                      flowType="drift"
-                      state={voiceOrbState}
-                      thinkingAnimation="ripples"
-                      searchingAnimation="lens"
-                      intensity={1}
-                      preserveWhites={true}
-                      animateEntrance={true}
-                      size={208}
-                      audioLevel={0.42}
-                      getAudioLevel={getLiveVoiceAudioLevel}
-                    />
-                  </div>
-                </div>
-              ) : hasQuery ? (
-                  <div ref={resultsListRef} className="search-results-list">
-                    {searchResults.length === 0 ? (
-                      <div className="search-status-empty">
-                        {isSearching ? 'Searching songs…' : 'No matching songs found'}
-                      </div>
-                    ) : (
-                      searchResults.map((item, idx) => {
-                        const rowKey = `${item.source || 'track'}:${item.id}`;
-                        const active = playingId === rowKey && isPlayingAudio;
-                        const dlState = downloadingIds[rowKey];
-                        const durText = formatDuration(item.duration);
-                        const artistText = formatMinimalArtist(item.artist);
-
-                        return (
-                          <DgReveal
-                            as="div"
-                            dir="row"
-                            index={idx}
-                            key={rowKey}
-                            className="search-result-row"
-                            data-active={active || undefined}
-                            onClick={() => void handleTogglePlay(item)}
-                          >
-                            <Cover track={item} identity={rowKey} loading="lazy" />
-
-                            <div className="search-result-meta">
-                              <div className="search-result-title" title={item.name}>
-                                {item.name}
-                              </div>
-                              <div className="search-result-sub">
-                                <span className="search-result-artist" title={item.artist}>
-                                  {artistText}
-                                </span>
-                                {durText && (
-                                  <span className="search-result-duration">{durText}</span>
-                                )}
-                              </div>
-                            </div>
-
-                            <div className="search-result-actions">
-                              <button
-                                type="button"
-                                className="row-play-icon-button"
-                                aria-label={active ? `Pause ${item.name}` : `Play ${item.name}`}
-                                title={active ? 'Pause' : 'Play'}
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  void handleTogglePlay(item);
-                                }}
-                              >
-                                {active ? <Pause /> : <Play />}
-                              </button>
-                              <button
-                                type="button"
-                                className={`download-icon-button${dlState === 'loading' ? ' is-downloading' : ''}${dlState === 'done' ? ' is-download-success' : ''}`}
-                                disabled={dlState === 'loading' || dlState === 'done'}
-                                aria-label={
-                                  dlState === 'done'
-                                    ? `Downloaded ${item.name}`
-                                    : `Download ${item.name}`
-                                }
-                                title={
-                                  dlState === 'done'
-                                    ? 'Downloaded'
-                                    : dlState === 'loading'
-                                      ? 'Saving offline…'
-                                      : `Save ${item.name} for offline listening`
-                                }
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  void handleDownloadTrack(item);
-                                }}
-                              >
-                                <svg
-                                  width="13"
-                                  height="15"
-                                  viewBox="0 0 13 15"
-                                  fill="none"
-                                  aria-hidden="true"
-                                  style={{ display: 'block', overflow: 'visible' }}
-                                >
-                                  {dlState === 'done' ? (
-                                    <path
-                                      className="download-success-check"
-                                      d="M2.1 7.7L5.1 10.5L11 3.8"
-                                      stroke="currentColor"
-                                      strokeWidth="1.8"
-                                      strokeLinecap="round"
-                                      strokeLinejoin="round"
-                                    />
-                                  ) : (
-                                    <path
-                                      d="M6.5 1.5V10.5M2.9 7.2L6.5 10.8L10.1 7.2M2.2 13H10.8"
-                                      stroke="currentColor"
-                                      strokeWidth="1.35"
-                                      strokeLinecap="round"
-                                      strokeLinejoin="round"
-                                    />
-                                  )}
-                                </svg>
-                              </button>
-                            </div>
-                          </DgReveal>
-                        );
-                      })
-                    )}
-                  </div>
-                ) : (
-                  searchHistory.length > 0 && (
-                    <div
-                      className="search-history-list"
-                      data-expanded={historyExpanded ? 'true' : 'false'}
-                    >
-                      <div className="search-history-header">
-                        <span className="crumb">Recent Searches</span>
-                        {searchHistory.length > 4 && (
-                          <button
-                            type="button"
-                            className={`icon-button search-history-more-btn${historyExpanded ? ' is-expanded' : ''}`}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setHistoryExpanded((prev) => !prev);
-                            }}
-                            aria-label={
-                              historyExpanded
-                                ? 'Show fewer recent searches'
-                                : 'Show more recent searches'
-                            }
-                            aria-expanded={historyExpanded}
-                            title={historyExpanded ? 'Show less' : 'Show more'}
-                          >
-                            <ChevronDown size={15} strokeWidth={1.85} />
-                          </button>
-                        )}
-                      </div>
-                      <div
-                        className={`search-history-items-scroll${historyExpanded ? ' is-expanded' : ''}`}
-                      >
-                        {(historyExpanded ? searchHistory : searchHistory.slice(0, 4)).map(
-                          (term, i) => (
-                            <div
-                              key={`history-${term}-${i}`}
-                              className={`palette-result search-history-item${i >= 4 ? ' is-extra-history' : ''}`}
-                              role="button"
-                              tabIndex={0}
-                              style={
-                                i >= 4
-                                  ? ({
-                                      cursor: 'pointer',
-                                      '--hist-idx': Math.min(i - 4, 8),
-                                    } as CSSProperties)
-                                  : { cursor: 'pointer' }
-                              }
-                              onClick={() => {
-                                setSearchQuery(term);
-                                setIsSearchPanelOpen(true);
-                              }}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter' || e.key === ' ') {
-                                  e.preventDefault();
-                                  setSearchQuery(term);
-                                  setIsSearchPanelOpen(true);
-                                }
-                              }}
-                            >
-                              <Clock3 size={16} />
-                              <span>{term}</span>
-                              <div style={{ marginLeft: 'auto', display: 'flex' }}>
-                                <button
-                                  type="button"
-                                  className="icon-button"
-                                  style={{ width: 28, height: 28, pointerEvents: 'auto' }}
-                                  onClick={(e) => handleRemoveHistory(term, e)}
-                                  aria-label="Remove from history"
-                                >
-                                  <X size={14} />
-                                </button>
-                              </div>
-                            </div>
-                          ),
-                        )}
-                      </div>
-                    </div>
-                  )
-                )}
-            </StarBorder>
-          )}
-
-          {children}
-        </section>
-
-        {/* Bottom Floating Liquid Glass Mini Player copied from VOID */}
-        {activeTrack && (
-          <div className="player-bar" data-testid="player-bar">
-            <div className="player-track" data-testid="player-current-track">
-              <Cover track={activeTrack} />
-              <span>
-                <span className="track-title mini-player-title-row">
-                  {activeTrack.name}
-                </span>
-                <span className="track-sub mini-player-sub-row">
-                  <span className="mini-player-artist-name">
-                    {formatMinimalArtist(activeTrack.artist)}
-                  </span>
-                </span>
-              </span>
-            </div>
-
-            <button
-              type="button"
-              className="icon-button mobile-mini-play"
-              onClick={(e) => {
-                e.stopPropagation();
-                void handleTogglePlay(activeTrack);
-              }}
-              aria-label={isPlayingAudio ? 'Pause' : 'Play'}
-            >
-              <VoidGlyph playing={isPlayingAudio} />
-            </button>
-
-            <div className="player-center">
-              <div className="player-controls">
-                <button
-                  type="button"
-                  className={`icon-button ${shuffle ? 'active-control' : ''}`}
-                  aria-label="Shuffle"
-                  title="Shuffle"
-                  aria-pressed={shuffle}
-                  onClick={() => setShuffle((prev) => !prev)}
-                >
-                  <Shuffle />
-                </button>
-                <button
-                  type="button"
-                  className="icon-button"
-                  aria-label="Previous track"
-                  title="Previous track"
-                  onClick={() => playRelative(-1)}
-                >
-                  <SkipBack />
-                </button>
-                <button
-                  type="button"
-                  className="icon-button play-button"
-                  aria-label={isPlayingAudio ? 'Pause' : 'Play'}
-                  title={isPlayingAudio ? 'Pause' : 'Play'}
-                  onClick={() => void handleTogglePlay(activeTrack)}
-                >
-                  <VoidGlyph playing={isPlayingAudio} />
-                </button>
-                <button
-                  type="button"
-                  className="icon-button"
-                  aria-label="Next track"
-                  title="Next track"
-                  onClick={() => playRelative(1)}
-                >
-                  <SkipForward />
-                </button>
-                <button
-                  type="button"
-                  className={`icon-button ${repeat !== 'off' ? 'active-control' : ''}`}
-                  aria-label={`Repeat ${repeat}`}
-                  title={`Repeat ${repeat}`}
-                  aria-pressed={repeat !== 'off'}
-                  onClick={() =>
-                    setRepeat((prev) =>
-                      prev === 'off' ? 'all' : prev === 'all' ? 'one' : 'off',
-                    )
-                  }
-                >
-                  {repeat === 'one' ? <Repeat1 /> : <Repeat />}
-                </button>
-              </div>
-
-              <div className="player-scrub">
-                <span>{formatElapsed(position)}</span>
-                <SoapBubbleMaterial {...SLIDER_BUBBLE_MATERIAL_PROPS}>
-                  <SoapBubbleSlider
-                    className="seek"
-                    scale={0.68}
-                    sliderHeight={18}
-                    trackHeight={3.5}
-                    hoverOnlyBubble
-                    from="rgb(232, 228, 220)"
-                    label="Playback position"
-                    min={0}
-                    max={effectiveDuration > 0 ? effectiveDuration : 100}
-                    step={0.1}
-                    value={
-                      effectiveDuration > 0
-                        ? Math.min(position, effectiveDuration)
-                        : 0
-                    }
-                    onValueChange={(val) => seekTo(val)}
-                  />
-                </SoapBubbleMaterial>
-                <span>{formatTime(effectiveDuration)}</span>
-              </div>
-            </div>
-
-            <div className="player-extra">
-              <button
-                type="button"
-                className={`download-icon-button extra-fade${activeTrackDlState === 'loading' ? ' is-downloading' : ''}${activeTrackDlState === 'done' ? ' is-download-success' : ''}`}
-                disabled={activeTrackDlState === 'loading' || activeTrackDlState === 'done'}
-                aria-label={
-                  activeTrackDlState === 'done'
-                    ? `Downloaded ${activeTrack.name}`
-                    : `Download ${activeTrack.name}`
-                }
-                title={
-                  activeTrackDlState === 'done'
-                    ? 'Downloaded'
-                    : activeTrackDlState === 'loading'
-                      ? 'Saving offline…'
-                      : `Download ${activeTrack.name}`
-                }
-                onClick={() => void handleDownloadTrack(activeTrack)}
-                style={{ width: 28, height: 28 }}
-              >
-                <svg
-                  width="13"
-                  height="15"
-                  viewBox="0 0 13 15"
-                  fill="none"
-                  aria-hidden="true"
-                  style={{ display: 'block', overflow: 'visible' }}
-                >
-                  {activeTrackDlState === 'done' ? (
-                    <path
-                      className="download-success-check"
-                      d="M2.1 7.7L5.1 10.5L11 3.8"
-                      stroke="currentColor"
-                      strokeWidth="1.8"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  ) : (
-                    <path
-                      d="M6.5 1.5V10.5M2.9 7.2L6.5 10.8L10.1 7.2M2.2 13H10.8"
-                      stroke="currentColor"
-                      strokeWidth="1.35"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  )}
-                </svg>
-              </button>
-              <VolumeControl
-                volume={volume}
-                muted={muted}
-                onVolume={(val) => {
-                  setVolume(val);
-                  setMuted(false);
-                }}
-                onToggleMute={() => setMuted((prev) => !prev)}
-              />
-            </div>
-          </div>
-        )}
-      </div>
+      {isMobileViewport ? <MobileUI {...uiProps} /> : <DesktopUI {...uiProps} />}
     </main>
   );
 }

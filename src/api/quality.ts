@@ -1007,7 +1007,10 @@ export function deduplicateAndSortSearchResults(results: SearchResult[], query?:
 
       merged[dupIdx] = {
         ...winner,
-        image: winner.image || loser.image,
+        image:
+          scoreCoverAuthenticity(winner) >= scoreCoverAuthenticity(loser)
+            ? winner.image || loser.image
+            : loser.image || winner.image,
         qualityUrls: {
           ...(loser.qualityUrls || {}),
           ...(winner.qualityUrls || {}),
@@ -1017,5 +1020,132 @@ export function deduplicateAndSortSearchResults(results: SearchResult[], query?:
     }
   }
 
-  return merged.sort((a, b) => compareResultsByQuality(a, b, query));
+  const sorted = merged.sort((a, b) => compareResultsByQuality(a, b, query));
+  return harmonizeCanonicalSongCovers(sorted);
+}
+
+const COMPILATION_ALBUM_REGEX =
+  /\b(one\s*hit\s*wonders?|hit\s*wonders?|top\s*\d+|best\s*of|greatest\s*hits|mega\s*hits|super\s*hits|party\s*hits|club\s*hits|dance\s*hits|house\s*tracks|age\s*of\s*the|time\s*to\s*have|peaceful|relaxing|chillout|chill\s*out|workout|fitness|lounge|now\s*that'?s\s*what|bravo\s*hits|ministry\s*of\s*sound|various\s*artists|compilation|anthology|collection|classics|retro|throwback|\d{2,4}s\s+(?:hits|music|pop|rock|dance|club|one\s*hit)|volume\s*\d+|vol\.?\s*\d+|hits\s*of|essential|ultimate\s+hits|pure\s+\w+|100\s*%|non\s*stop|dj\s+mix|chart\s*hits|summer\s*hits|winter\s*hits|love\s*songs|sad\s*songs)\b/i;
+
+export function extractBaseSongHeadline(rawTitle: string): string {
+  const clean = cleanCanonicalTrackTitle(rawTitle);
+  const stripped = clean
+    .replace(/\s*\([^)]*\)/g, ' ')
+    .replace(/\s*\[[^\]]*\]/g, ' ')
+    .replace(/\s*[-–—/]\s*(?:pt\.?\s*\d+|part\s*(?:[ivx]+|\d+)|radio\s*edit|extended.*|remix.*|mix.*|version.*|edit.*|remaster.*)$/i, '')
+    .trim();
+  return normalizeForDedup(stripped || clean);
+}
+
+export function isCompilationOrMismatchedAlbum(
+  albumName?: string,
+  songTitle?: string,
+  artistName?: string
+): boolean {
+  const album = String(albumName || '').trim();
+  if (!album || /^unknown/i.test(album) || /^youtube\b/i.test(album)) return true;
+  if (COMPILATION_ALBUM_REGEX.test(album)) return true;
+
+  const title = String(songTitle || '').trim();
+  const artist = String(artistName || '').trim();
+  const hasCjkInAlbum = /[\u3000-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF]/.test(album);
+  const hasCjkInMeta = /[\u3000-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF]/.test(`${title} ${artist}`);
+  if (hasCjkInAlbum && !hasCjkInMeta) return true;
+
+  return false;
+}
+
+export function scoreCoverAuthenticity(item: {
+  name?: string;
+  title?: string;
+  album?: string;
+  artist?: string;
+  image?: string;
+  source?: string;
+}): number {
+  const img = String(item?.image || '').trim();
+  if (!img || !/^https?:\/\//i.test(img)) return -200;
+
+  const title = String(item?.name || item?.title || '').trim();
+  const album = String(item?.album || '').trim();
+  const artist = String(item?.artist || '').trim();
+  const source = String(item?.source || '').toLowerCase();
+
+  if (isCompilationOrMismatchedAlbum(album, title, artist)) {
+    return -100;
+  }
+
+  let score = 20;
+  if (/(?:saavncdn\.com|mzstatic\.com|dzcdn\.net|scdn\.co)/i.test(img)) {
+    score += 25;
+  } else if (source.includes('youtube') || /ytimg\.com/i.test(img)) {
+    score -= 15;
+  }
+
+  const baseTitle = extractBaseSongHeadline(title);
+  const baseAlbum = extractBaseSongHeadline(album);
+  const normAlbum = normalizeForDedup(album);
+
+  if (baseTitle && baseAlbum) {
+    if (baseAlbum === baseTitle || normAlbum === baseTitle) {
+      score += 80;
+    } else if (baseAlbum.startsWith(baseTitle + ' ') || normAlbum.startsWith(baseTitle + ' ')) {
+      score += 65;
+    } else if (normAlbum.includes(baseTitle)) {
+      score += 45;
+    }
+  }
+
+  return score;
+}
+
+export function harmonizeCanonicalSongCovers(results: SearchResult[]): SearchResult[] {
+  if (!Array.isArray(results) || results.length <= 1) return results;
+
+  const bestByGroup = new Map<
+    string,
+    { image: string; album: string; score: number }
+  >();
+
+  for (const item of results) {
+    if (!item || !item.image) continue;
+    const baseTitle = extractBaseSongHeadline(item.name);
+    const primaryArtist = getPhoneticArtistKey(item.artist);
+    if (!baseTitle || !primaryArtist) continue;
+    const partOrder = extractPartOrder(item.name);
+    const partGroup = partOrder >= 2 ? partOrder : 1;
+    const groupKey = `${baseTitle}|${primaryArtist}|${partGroup}`;
+
+    const score = scoreCoverAuthenticity(item);
+    const existing = bestByGroup.get(groupKey);
+    if (!existing || score > existing.score) {
+      bestByGroup.set(groupKey, {
+        image: item.image,
+        album: item.album,
+        score,
+      });
+    }
+  }
+
+  return results.map((item) => {
+    const baseTitle = extractBaseSongHeadline(item.name);
+    const primaryArtist = getPhoneticArtistKey(item.artist);
+    if (!baseTitle || !primaryArtist) return item;
+
+    const partOrder = extractPartOrder(item.name);
+    const partGroup = partOrder >= 2 ? partOrder : 1;
+    const groupKey = `${baseTitle}|${primaryArtist}|${partGroup}`;
+    const best = bestByGroup.get(groupKey);
+    if (!best || best.score < 35) return item;
+
+    const ownScore = scoreCoverAuthenticity(item);
+    // Replace compilation / mismatched / low-authenticity covers with the verified canonical cover for the same song & artist
+    if (ownScore < 0 || (best.score >= 85 && ownScore < 50 && item.image !== best.image)) {
+      return {
+        ...item,
+        image: best.image,
+      };
+    }
+    return item;
+  });
 }
